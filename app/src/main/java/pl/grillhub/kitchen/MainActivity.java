@@ -1,6 +1,19 @@
 package pl.grillhub.kitchen;
 
 import android.app.Activity;
+import android.media.AudioAttributes;
+import android.media.Ringtone;
+import android.media.RingtoneManager;
+import android.text.Spannable;
+import android.text.SpannableStringBuilder;
+import android.text.style.ForegroundColorSpan;
+import android.text.style.StyleSpan;
+import java.text.SimpleDateFormat;
+import java.util.HashSet;
+import java.util.LinkedHashMap;
+import java.util.Locale;
+import java.util.Map;
+import java.util.Set;
 import android.app.AlertDialog;
 import android.app.PendingIntent;
 import android.bluetooth.BluetoothAdapter;
@@ -61,6 +74,9 @@ public class MainActivity extends Activity implements Store.Listener {
     private static final int RC_NOTIF = 1, RC_BATT = 2, RC_FSI = 3, RC_BT = 4;
     private final List<PrinterScan.Found> found = new ArrayList<>();
     private boolean scanning = false, scanned = false;
+    private String query = "";
+    private boolean animNew = false, renderedOnce = false;
+    private final Set<Integer> shown = new HashSet<>();
 
     private final Handler ui = new Handler(Looper.getMainLooper());
     private SharedPreferences prefs;
@@ -71,7 +87,7 @@ public class MainActivity extends Activity implements Store.Listener {
     private final Runnable clock = new Runnable() {
         @Override public void run() {
             render();
-            ui.postDelayed(this, 30000);
+            ui.postDelayed(this, 15000);
         }
     };
 
@@ -111,7 +127,7 @@ public class MainActivity extends Activity implements Store.Listener {
         startListener();
         render();
         ui.removeCallbacks(clock);
-        ui.postDelayed(clock, 30000);
+        ui.postDelayed(clock, 15000);
     }
 
     @Override
@@ -221,7 +237,7 @@ public class MainActivity extends Activity implements Store.Listener {
     private TextView button(String s, int bg, float sp, View.OnClickListener click) {
         TextView t = tv(s, sp, Color.WHITE, true);
         t.setGravity(Gravity.CENTER);
-        t.setBackground(ripple(bg, 14));
+        t.setBackground(bg == ORANGE || bg == GREEN ? gradient(bg, 14) : ripple(bg, 14));
         t.setClickable(true);
         t.setOnClickListener(click);
         return t;
@@ -259,6 +275,8 @@ public class MainActivity extends Activity implements Store.Listener {
 
     private void render() {
         if (root == null) return;
+        applyKeepScreen();
+        animNew = renderedOnce;
         final int scrollY = sv != null ? sv.getScrollY() : 0;
 
         List<JSONObject> act = new ArrayList<>(), sch = new ArrayList<>(), his = new ArrayList<>();
@@ -321,17 +339,27 @@ public class MainActivity extends Activity implements Store.Listener {
         c.set(Calendar.HOUR_OF_DAY, 0); c.set(Calendar.MINUTE, 0); c.set(Calendar.SECOND, 0); c.set(Calendar.MILLISECOND, 0);
         for (JSONObject o : Store.orders) if (Store.ts(o) >= c.getTimeInMillis()) { cnt++; sum += o.optDouble("total"); }
 
+        int widthDp0 = (int) (getResources().getDisplayMetrics().widthPixels / getResources().getDisplayMetrics().density);
         LinearLayout head = hbox();
         head.setPadding(dp(16), dp(12), dp(16), dp(10));
         ImageView logo = new ImageView(this);
         logo.setImageResource(R.mipmap.ic_launcher);
-        head.addView(logo, lp(dp(44), dp(44), 0f, 0, 0, 12, 0));
+        head.addView(logo, lp(dp(46), dp(46), 0f, 0, 0, 12, 0));
         LinearLayout titles = vbox();
-        titles.addView(tv("Grill Hub · Kitchen", 20, TEXT, true));
-        titles.addView(tv("Today: " + cnt + " orders · " + Store.money(sum) + "PLN", 13, DIM, false));
+        titles.addView(tv("Grill Hub", 22, TEXT, true));
+        titles.addView(tv("KITCHEN DISPLAY", 11, ORANGE, true));
         head.addView(titles, lp(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f, 0, 0, 0, 0));
+        if (widthDp0 >= 700) {
+            head.addView(tile("OPEN", String.valueOf(act.size())), lp(ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT, 0f, 0, 0, 8, 0));
+            head.addView(tile("TODAY", cnt + " orders"), lp(ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT, 0f, 0, 0, 8, 0));
+            head.addView(tile("REVENUE", Store.money(sum) + " PLN"), lp(ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT, 0f, 0, 0, 14, 0));
+        }
+        LinearLayout right = vbox();
+        right.setGravity(Gravity.END);
+        right.addView(tv(new SimpleDateFormat("HH:mm", Locale.getDefault()).format(new java.util.Date()), 24, TEXT, true));
         boolean bad = Store.offline || Store.authError;
-        head.addView(chip(bad ? "● OFFLINE" : "● ONLINE", bad ? RED_DIM : 0x2622C55E, bad ? RED : GREEN));
+        right.addView(chip(bad ? "● OFFLINE" : "● ONLINE", bad ? RED_DIM : 0x2622C55E, bad ? RED : GREEN));
+        head.addView(right);
         root.addView(head);
 
         // ---- tabs
@@ -362,12 +390,23 @@ public class MainActivity extends Activity implements Store.Listener {
         root.addView(tabs);
 
         // ---- list (grid of cards; more columns on a tablet)
+        if (tab.equals("history") && !query.isEmpty()) {
+            String q = query.toLowerCase(Locale.getDefault());
+            List<JSONObject> f = new ArrayList<>();
+            for (JSONObject o : his) {
+                String hay = (o.optInt("num") + " " + o.optString("name") + " " + o.optString("phone") + " " + o.optString("table")).toLowerCase(Locale.getDefault());
+                if (hay.contains(q)) f.add(o);
+            }
+            his = f;
+        }
         List<JSONObject> list = tab.equals("orders") ? act : tab.equals("sched") ? sch : his;
         int widthDp = (int) (getResources().getDisplayMetrics().widthPixels / getResources().getDisplayMetrics().density);
         int cols = Math.max(1, Math.min(3, widthDp / 360));
 
         LinearLayout box = vbox();
         box.setPadding(dp(8), dp(4), dp(8), dp(24));
+        if (tab.equals("orders") && act.size() >= 2) box.addView(prepList(act));
+        if (tab.equals("history")) box.addView(historyHeader());
         if (tab.equals("settings")) {
             box.addView(settingsView());
         } else if (list.isEmpty()) {
@@ -403,6 +442,7 @@ public class MainActivity extends Activity implements Store.Listener {
         root.addView(s, new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, 0, 1f));
         sv = s;
         s.post(() -> s.scrollTo(0, scrollY));
+        renderedOnce = true;
     }
 
     // ------------------------------------------------------------ order card
@@ -413,12 +453,32 @@ public class MainActivity extends Activity implements Store.Listener {
         final boolean dine = "dine".equals(o.optString("mode"));
         final boolean ringing = Store.isRinging(id);
 
-        LinearLayout c = vbox();
-        c.setPadding(dp(16), dp(14), dp(16), dp(16));
+        final LinearLayout outer = vbox();
         GradientDrawable bg = shape(SURFACE, 18);
         bg.setStroke(dp(ringing ? 3 : 1), ringing ? ORANGE : LINE);
-        c.setBackground(bg);
-        if (done) c.setAlpha(0.65f);
+        outer.setBackground(bg);
+        outer.setClipToOutline(true);
+        final int ageCol = done ? LINE : ringing ? ORANGE : ageColor(o);
+        View bar = new View(this);
+        bar.setBackgroundColor(ageCol);
+        outer.addView(bar, new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, dp(7)));
+        if (ringing) {
+            AlphaAnimation pa = new AlphaAnimation(1f, 0.25f);
+            pa.setDuration(500);
+            pa.setRepeatMode(Animation.REVERSE);
+            pa.setRepeatCount(Animation.INFINITE);
+            bar.startAnimation(pa);
+        }
+        LinearLayout c = vbox();
+        c.setPadding(dp(16), dp(12), dp(16), dp(16));
+        outer.addView(c);
+        float targetAlpha = done ? 0.65f : 1f;
+        outer.setAlpha(targetAlpha);
+        if (shown.add(id) && animNew) {
+            outer.setAlpha(0f);
+            outer.setTranslationY(dp(28));
+            outer.animate().alpha(targetAlpha).translationY(0).setDuration(380).start();
+        }
 
         // number + time
         LinearLayout head = hbox();
@@ -427,8 +487,9 @@ public class MainActivity extends Activity implements Store.Listener {
         LinearLayout when = vbox();
         TextView t1 = tv(Store.hhmm(o), 18, TEXT, true);
         t1.setGravity(Gravity.END);
-        TextView t2 = tv(Store.ago(o), 12, DIM, false);
-        t2.setGravity(Gravity.END);
+        View t2 = done ? tv(Store.ago(o), 12, DIM, false)
+                : chip("⏱ " + Math.max(0, (Store.serverNow() - Store.ts(o)) / 60000) + " min", ageDim(ageCol), ageCol);
+        when.setGravity(Gravity.END);
         when.addView(t1);
         when.addView(t2);
         head.addView(when);
@@ -448,7 +509,11 @@ public class MainActivity extends Activity implements Store.Listener {
         }
         if (!dine) {
             String who = o.optString("name") + (o.optString("phone").isEmpty() ? "" : "  ·  " + o.optString("phone"));
-            c.addView(tv(who, 16, TEXT, true), lp(ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT, 0f, 0, 8, 0, 0));
+            LinearLayout wr = hbox();
+            wr.addView(tv(who, 16, TEXT, true), lp(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f, 0, 0, 0, 0));
+            if (!o.optString("phone").isEmpty())
+                wr.addView(button("📞 Call", SURFACE2, 14, v -> dial(o.optString("phone"))), lp(dp(92), dp(40), 0f, 8, 0, 0, 0));
+            c.addView(wr, lp(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT, 0f, 0, 8, 0, 0));
             if (!o.optString("eta").isEmpty() && !scheduled)
                 c.addView(tv("Pickup time: " + o.optString("eta"), 14, AMBER, true));
         }
@@ -494,7 +559,7 @@ public class MainActivity extends Activity implements Store.Listener {
         if (o.optDouble("coupon", 0) > 0) fee.append("Code ").append(o.optString("code")).append(" −").append(Store.money(o.optDouble("coupon"))).append(" PLN\n");
         TextView f = tv(fee.toString().trim(), 12, DIM, false);
         foot.addView(f, lp(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f, 0, 0, 0, 0));
-        foot.addView(tv(Store.money(o.optDouble("total")) + "PLN", 24, TEXT, true));
+        foot.addView(tv(Store.money(o.optDouble("total")) + " PLN", 24, TEXT, true));
         c.addView(foot);
 
         // actions
@@ -504,6 +569,16 @@ public class MainActivity extends Activity implements Store.Listener {
         } else if (ringing) {
             TextView acc = button("✓  ACCEPT ORDER", ORANGE, 19, v -> Store.accept(id));
             c.addView(acc, lp(ViewGroup.LayoutParams.MATCH_PARENT, dp(66), 0f, 0, 12, 0, 0));
+            if (dine || o.optString("eta").isEmpty()) {
+                c.addView(tv("ACCEPT & PROMISE READY IN", 11, DIM, true), lp(ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT, 0f, 2, 10, 0, 0));
+                LinearLayout pp = hbox();
+                for (final int mins : new int[]{10, 15, 20, 30}) {
+                    pp.addView(button(mins + " min", ORANGE_DIM, 15, v -> Store.setPrep(id, mins, r -> {
+                        if (r == null) Toast.makeText(this, "Network error", Toast.LENGTH_SHORT).show();
+                    })), lp(0, dp(46), 1f, 2, 4, 2, 0));
+                }
+                c.addView(pp);
+            }
         } else {
             long readyAt = o.optLong("ready_at");
             boolean hasEta = !dine && !o.optString("eta").isEmpty();
@@ -523,7 +598,199 @@ public class MainActivity extends Activity implements Store.Listener {
                 if (r == null) Toast.makeText(this, "Network error", Toast.LENGTH_SHORT).show();
             })), lp(ViewGroup.LayoutParams.MATCH_PARENT, dp(58), 0f, 0, 12, 0, 0));
         }
-        return c;
+        return outer;
+    }
+
+    // ------------------------------------------------------------ extras: stats, prep list, search, helpers
+
+    private int scale(int color, float f) {
+        return Color.rgb(Math.min(255, (int) (Color.red(color) * f)), Math.min(255, (int) (Color.green(color) * f)), Math.min(255, (int) (Color.blue(color) * f)));
+    }
+
+    private Drawable gradient(int color, float radiusDp) {
+        GradientDrawable g = new GradientDrawable(GradientDrawable.Orientation.TOP_BOTTOM, new int[]{scale(color, 1.15f), scale(color, 0.82f)});
+        g.setCornerRadius(dp(radiusDp));
+        return new RippleDrawable(ColorStateList.valueOf(0x44FFFFFF), g, shape(Color.WHITE, radiusDp));
+    }
+
+    /** green < 10 min, amber < 20 min, red after that */
+    private int ageColor(JSONObject o) {
+        long m = (Store.serverNow() - Store.ts(o)) / 60000;
+        return m < 10 ? GREEN : m < 20 ? AMBER : RED;
+    }
+
+    private int ageDim(int c) { return (c & 0x00FFFFFF) | 0x33000000; }
+
+    private View tile(String label, String value) {
+        LinearLayout t = vbox();
+        t.setPadding(dp(14), dp(7), dp(14), dp(7));
+        t.setBackground(shape(SURFACE, 12));
+        t.addView(tv(label, 10, DIM, true));
+        t.addView(tv(value, 17, TEXT, true));
+        return t;
+    }
+
+    private void applyKeepScreen() {
+        if (Printer.on(this, "keep_screen")) getWindow().addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON);
+        else getWindow().clearFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON);
+    }
+
+    private void dial(String phone) {
+        try {
+            startActivity(new Intent(Intent.ACTION_DIAL, Uri.parse("tel:" + phone.replaceAll("[^0-9+]", ""))));
+        } catch (Exception e) {
+            Toast.makeText(this, "No phone app on this device", Toast.LENGTH_SHORT).show();
+        }
+    }
+
+    private void testAlarm() {
+        try {
+            Uri u = RingtoneManager.getDefaultUri(RingtoneManager.TYPE_ALARM);
+            if (u == null) u = RingtoneManager.getDefaultUri(RingtoneManager.TYPE_RINGTONE);
+            final Ringtone r = RingtoneManager.getRingtone(this, u);
+            r.setAudioAttributes(new AudioAttributes.Builder().setUsage(AudioAttributes.USAGE_ALARM).build());
+            r.play();
+            ui.postDelayed(() -> { try { r.stop(); } catch (Exception e) { /* ignore */ } }, 3500);
+            Toast.makeText(this, "Playing the alarm for 3 seconds…", Toast.LENGTH_SHORT).show();
+        } catch (Exception e) {
+            Toast.makeText(this, "Can't play the alarm sound", Toast.LENGTH_SHORT).show();
+        }
+    }
+
+    /** Totals of every item in all open orders: what the kitchen has to prepare right now. */
+    private View prepList(List<JSONObject> open) {
+        Map<String, Integer> m = new LinkedHashMap<>();
+        for (JSONObject o : open) {
+            JSONArray lines = o.optJSONArray("lines");
+            if (lines == null) continue;
+            for (int i = 0; i < lines.length(); i++) {
+                JSONObject l = lines.optJSONObject(i);
+                if (l == null) continue;
+                String n = l.optString("name");
+                Integer cur = m.get(n);
+                m.put(n, (cur == null ? 0 : cur) + l.optInt("qty"));
+            }
+        }
+        List<Map.Entry<String, Integer>> es = new ArrayList<>(m.entrySet());
+        Collections.sort(es, (a, b) -> b.getValue() - a.getValue());
+
+        SpannableStringBuilder sb = new SpannableStringBuilder();
+        for (Map.Entry<String, Integer> e : es) {
+            if (sb.length() > 0) sb.append("     ");
+            int st = sb.length();
+            sb.append(e.getValue() + "×");
+            sb.setSpan(new ForegroundColorSpan(ORANGE), st, sb.length(), Spannable.SPAN_EXCLUSIVE_EXCLUSIVE);
+            sb.setSpan(new StyleSpan(Typeface.BOLD), st, sb.length(), Spannable.SPAN_EXCLUSIVE_EXCLUSIVE);
+            sb.append(" " + e.getKey());
+        }
+        LinearLayout p = panel();
+        p.addView(tv("PREP LIST · ALL OPEN ORDERS", 11, DIM, true));
+        TextView body = tv("", 17, TEXT, true);
+        body.setText(sb);
+        body.setLineSpacing(0, 1.25f);
+        body.setPadding(0, dp(6), 0, 0);
+        p.addView(body);
+        LinearLayout.LayoutParams lp = lp(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT, 0f, 6, 6, 6, 4);
+        p.setLayoutParams(lp);
+        return p;
+    }
+
+    private View historyHeader() {
+        LinearLayout h = vbox();
+        h.setPadding(dp(6), dp(6), dp(6), dp(2));
+        h.addView(statsPanel());
+
+        LinearLayout bar = hbox();
+        bar.addView(button("🔍  Search", SURFACE2, 15, v -> searchDialog()), lp(dp(140), dp(44), 0f, 0, 0, 8, 0));
+        if (!query.isEmpty()) {
+            TextView chip = chip("“" + query + "”   ✕", ORANGE_DIM, ORANGE);
+            chip.setTextSize(14);
+            chip.setPadding(dp(14), dp(8), dp(14), dp(8));
+            chip.setClickable(true);
+            chip.setOnClickListener(v -> { query = ""; render(); });
+            bar.addView(chip);
+        }
+        h.addView(bar, lp(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT, 0f, 0, 10, 0, 4));
+        return h;
+    }
+
+    private void searchDialog() {
+        final EditText in = new EditText(this);
+        in.setInputType(InputType.TYPE_CLASS_TEXT);
+        in.setHint("Order #, name, phone or table");
+        in.setText(query);
+        in.setSelection(in.getText().length());
+        new AlertDialog.Builder(this).setTitle("Search history").setView(in)
+                .setPositiveButton("Search", (d, w) -> { query = in.getText().toString().trim(); render(); })
+                .setNeutralButton("Clear", (d, w) -> { query = ""; render(); })
+                .setNegativeButton("Cancel", null).show();
+    }
+
+    /** today: orders, revenue, average ticket, best sellers and orders per hour */
+    private View statsPanel() {
+        Calendar c0 = Calendar.getInstance();
+        c0.set(Calendar.HOUR_OF_DAY, 0); c0.set(Calendar.MINUTE, 0); c0.set(Calendar.SECOND, 0); c0.set(Calendar.MILLISECOND, 0);
+        int n = 0;
+        double sum = 0;
+        int[] perHour = new int[24];
+        Map<String, Integer> items = new LinkedHashMap<>();
+        Calendar tmp = Calendar.getInstance();
+        for (JSONObject o : Store.orders) {
+            if (Store.ts(o) < c0.getTimeInMillis()) continue;
+            n++;
+            sum += o.optDouble("total");
+            tmp.setTimeInMillis(Store.ts(o));
+            perHour[tmp.get(Calendar.HOUR_OF_DAY)]++;
+            JSONArray lines = o.optJSONArray("lines");
+            if (lines != null) for (int i = 0; i < lines.length(); i++) {
+                JSONObject l = lines.optJSONObject(i);
+                if (l == null) continue;
+                Integer cur = items.get(l.optString("name"));
+                items.put(l.optString("name"), (cur == null ? 0 : cur) + l.optInt("qty"));
+            }
+        }
+
+        LinearLayout p = panel();
+        p.addView(tv("TODAY", 11, ORANGE, true));
+        LinearLayout tiles = hbox();
+        tiles.addView(tile("ORDERS", String.valueOf(n)), lp(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f, 0, 6, 4, 0));
+        tiles.addView(tile("REVENUE", Store.money(sum) + " PLN"), lp(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1.3f, 4, 6, 4, 0));
+        tiles.addView(tile("AVG ORDER", n == 0 ? "—" : Store.money(sum / n) + " PLN"), lp(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1.3f, 4, 6, 0, 0));
+        p.addView(tiles);
+
+        if (n > 0) {
+            // busiest hours
+            int lo = 23, hi = 0, max = 1;
+            for (int h = 0; h < 24; h++) if (perHour[h] > 0) { lo = Math.min(lo, h); hi = Math.max(hi, h); max = Math.max(max, perHour[h]); }
+            p.addView(tv("ORDERS PER HOUR", 11, DIM, true), lp(ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT, 0f, 0, 14, 0, 4));
+            LinearLayout bars = new LinearLayout(this);
+            bars.setOrientation(LinearLayout.HORIZONTAL);
+            bars.setGravity(Gravity.BOTTOM);
+            for (int h = lo; h <= hi; h++) {
+                LinearLayout col = vbox();
+                col.setGravity(Gravity.CENTER_HORIZONTAL);
+                col.addView(tv(perHour[h] > 0 ? String.valueOf(perHour[h]) : "", 11, TEXT, true));
+                View b = new View(this);
+                b.setBackground(shape(perHour[h] == max ? ORANGE : 0x99FF6A1A, 4));
+                col.addView(b, new LinearLayout.LayoutParams(dp(18), Math.max(dp(3), dp(56) * perHour[h] / max)));
+                col.addView(tv(String.valueOf(h), 10, DIM, false));
+                bars.addView(col, lp(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f, 1, 0, 1, 0));
+            }
+            p.addView(bars);
+
+            // best sellers
+            List<Map.Entry<String, Integer>> es = new ArrayList<>(items.entrySet());
+            Collections.sort(es, (a, b) -> b.getValue() - a.getValue());
+            p.addView(tv("BEST SELLERS", 11, DIM, true), lp(ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT, 0f, 0, 14, 0, 4));
+            for (int i = 0; i < Math.min(5, es.size()); i++) {
+                LinearLayout r = hbox();
+                r.addView(tv((i + 1) + ".", 14, DIM, true), lp(dp(22), ViewGroup.LayoutParams.WRAP_CONTENT, 0f, 0, 0, 0, 0));
+                r.addView(tv(es.get(i).getKey(), 15, TEXT, false), lp(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f, 0, 0, 0, 0));
+                r.addView(tv(es.get(i).getValue() + "×", 15, ORANGE, true));
+                p.addView(r, lp(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT, 0f, 0, 2, 0, 2));
+            }
+        }
+        return p;
     }
 
     // ------------------------------------------------------------ printing UI
@@ -742,6 +1009,12 @@ public class MainActivity extends Activity implements Store.Listener {
         textRow(q, "Header", "header", "Receipt header");
         textRow(q, "Footer", "footer", "Receipt footer");
         box.addView(q);
+
+        box.addView(sectionTitle("App"));
+        LinearLayout ap = panel();
+        toggleRow(ap, "Keep screen on", "keep_screen");
+        ap.addView(button("🔔  Test alarm sound", SURFACE2, 16, v -> testAlarm()), lp(ViewGroup.LayoutParams.MATCH_PARENT, dp(50), 0f, 0, 8, 0, 0));
+        box.addView(ap);
 
         TextView hint = tv("A Bluetooth printer must be on (the first time, you will be asked to pair it). A network printer needs port 9100 and must be on the same Wi-Fi as the tablet.", 12, DIM, false);
         hint.setPadding(dp(6), dp(12), dp(6), 0);

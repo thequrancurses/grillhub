@@ -46,6 +46,9 @@ public class OrderService extends Service implements Store.Listener {
     private WifiManager.WifiLock wifi;
     private MediaPlayer player;
     private String lastFg = "", lastAlert = "";
+    private boolean offlineShown = false;
+    private static final String CH_OFFLINE = "offline_en";
+    private static final int ID_OFFLINE = 3;
 
     private final Runnable tick = new Runnable() {
         @Override public void run() {
@@ -126,6 +129,21 @@ public class OrderService extends Service implements Store.Listener {
             }
         }
 
+        if (Store.offline && !offlineShown) {
+            offlineShown = true;
+            nm.notify(ID_OFFLINE, new Notification.Builder(this, CH_OFFLINE)
+                    .setSmallIcon(R.drawable.ic_stat)
+                    .setContentTitle("⚠ Connection lost")
+                    .setContentText("New orders may not arrive. Check the tablet's internet connection.")
+                    .setColor(0xFFEF4444)
+                    .setContentIntent(openApp())
+                    .setAutoCancel(true)
+                    .build());
+        } else if (!Store.offline && offlineShown) {
+            offlineShown = false;
+            nm.cancel(ID_OFFLINE);
+        }
+
         int active = 0;
         for (JSONObject o : Store.orders) if (!o.optBoolean("done")) active++;
         String text = Store.authError ? "Server rejected the PIN"
@@ -184,6 +202,8 @@ public class OrderService extends Service implements Store.Listener {
         NotificationChannel s = new NotificationChannel(CH_SERVICE, "Background service", NotificationManager.IMPORTANCE_LOW);
         s.setShowBadge(false);
         nm.createNotificationChannel(s);
+
+        nm.createNotificationChannel(new NotificationChannel(CH_OFFLINE, "Connection problems", NotificationManager.IMPORTANCE_HIGH));
 
         NotificationChannel a = new NotificationChannel(CH_ALERT, "New orders", NotificationManager.IMPORTANCE_HIGH);
         a.setSound(null, null);          // the alarm is played by the service itself, in a loop
