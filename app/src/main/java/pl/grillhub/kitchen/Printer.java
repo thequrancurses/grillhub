@@ -75,7 +75,7 @@ final class Printer {
     static boolean configured(Context c) { return !get(c, "type").isEmpty() && !get(c, "addr").isEmpty(); }
 
     static String typeLabel(String t) {
-        return t.equals("bt") ? "Bluetooth" : t.equals("net") ? "Sieć (Wi-Fi/LAN)" : t.equals("usb") ? "USB" : "";
+        return t.equals("bt") ? "Bluetooth" : t.equals("net") ? "Network (Wi-Fi/LAN)" : t.equals("usb") ? "USB" : "";
     }
 
     static void select(Context c, String type, String addr, String name) {
@@ -148,14 +148,14 @@ final class Printer {
         if (!header.isEmpty()) B.add(new Blk(header, 'c', true, 2));
         B.add(new Blk(new SimpleDateFormat("dd.MM.yyyy HH:mm", Locale.getDefault()).format(new java.util.Date(o.optLong("ts") * 1000)), 'c', false, 1));
         B.add(new Blk(dash, 'l', false, 1));
-        B.add(new Blk((big ? "ZAMOWIENIE #" : "Zamowienie #") + o.optInt("num"), 'c', true, big ? 2 : 1));
+        B.add(new Blk((big ? "ORDER #" : "Order #") + o.optInt("num"), 'c', true, big ? 2 : 1));
         if ("dine".equals(o.optString("mode"))) {
-            B.add(new Blk("NA MIEJSCU" + (o.optString("table").isEmpty() ? "" : "  STOLIK " + o.optString("table")), 'c', true, 2));
+            B.add(new Blk("DINE IN" + (o.optString("table").isEmpty() ? "" : "  TABLE " + o.optString("table")), 'c', true, 2));
         } else {
-            B.add(new Blk("ODBIOR OSOBISTY", 'c', true, 2));
-            if (!o.optString("name").isEmpty()) B.add(new Blk("Imie: " + o.optString("name"), 'l', true, 1));
-            if (!o.optString("phone").isEmpty() && on(c, "show_phone")) B.add(new Blk("Tel: " + o.optString("phone"), 'l', false, 1));
-            if (!o.optString("eta").isEmpty()) B.add(new Blk("Godzina odbioru: " + o.optString("eta"), 'l', true, 1));
+            B.add(new Blk("PICKUP", 'c', true, 2));
+            if (!o.optString("name").isEmpty()) B.add(new Blk("Name: " + o.optString("name"), 'l', true, 1));
+            if (!o.optString("phone").isEmpty() && on(c, "show_phone")) B.add(new Blk("Phone: " + o.optString("phone"), 'l', false, 1));
+            if (!o.optString("eta").isEmpty()) B.add(new Blk("Pickup time: " + o.optString("eta"), 'l', true, 1));
         }
         B.add(new Blk(dash, 'l', false, 1));
 
@@ -178,15 +178,15 @@ final class Printer {
         B.add(new Blk(dash, 'l', false, 1));
 
         if (prices) {
-            if (o.optDouble("deposit", 0) > 0) B.add(new Blk(two("Kaucja za napoje", "+" + Store.money(o.optDouble("deposit")), cols), 'l', false, 1));
-            if (o.optDouble("pack", 0) > 0) B.add(new Blk(two("Opakowanie na wynos", "+" + Store.money(o.optDouble("pack")), cols), 'l', false, 1));
-            if (o.optDouble("combo", 0) > 0) B.add(new Blk(two("Zestaw wrap+napoj", "-" + Store.money(o.optDouble("combo")), cols), 'l', false, 1));
-            if (o.optDouble("coupon", 0) > 0) B.add(new Blk(two("Kod " + o.optString("code"), "-" + Store.money(o.optDouble("coupon")), cols), 'l', false, 1));
-            B.add(new Blk(two("RAZEM:", Store.money(o.optDouble("total")) + " zl", cols / 2), 'r', true, 2));
+            if (o.optDouble("deposit", 0) > 0) B.add(new Blk(two("Drink deposit", "+" + Store.money(o.optDouble("deposit")), cols), 'l', false, 1));
+            if (o.optDouble("pack", 0) > 0) B.add(new Blk(two("Takeaway packaging", "+" + Store.money(o.optDouble("pack")), cols), 'l', false, 1));
+            if (o.optDouble("combo", 0) > 0) B.add(new Blk(two("Wrap + drink combo", "-" + Store.money(o.optDouble("combo")), cols), 'l', false, 1));
+            if (o.optDouble("coupon", 0) > 0) B.add(new Blk(two("Code " + o.optString("code"), "-" + Store.money(o.optDouble("coupon")), cols), 'l', false, 1));
+            B.add(new Blk(two("TOTAL:", Store.money(o.optDouble("total")) + " PLN", cols / 2), 'r', true, 2));
         }
         if (!o.optString("notes").isEmpty()) {
             B.add(new Blk("", 'l', false, 1));
-            B.add(new Blk("UWAGI:", 'l', true, 1));
+            B.add(new Blk("NOTES:", 'l', true, 1));
             for (String x : wrap(o.optString("notes"), cols)) B.add(new Blk(x, 'l', false, 1));
         }
         if (!footer.isEmpty()) {
@@ -237,7 +237,7 @@ final class Printer {
             o.put("mode", "dine");
             o.put("table", "TEST");
             JSONArray lines = new JSONArray();
-            lines.put(new JSONObject().put("name", "Test wydruku ąęśćżźół").put("qty", 1).put("price", 10).put("desc", ""));
+            lines.put(new JSONObject().put("name", "Test print").put("qty", 1).put("price", 10).put("desc", ""));
             o.put("lines", lines);
             o.put("total", 10);
             o.put("notes", "Test");
@@ -307,7 +307,7 @@ final class Printer {
         if (type.equals("bt")) sendBt(addr, data);
         else if (type.equals("net")) sendNet(addr, data);
         else if (type.equals("usb")) sendUsb(c, addr, data);
-        else throw new IOException("Nie wybrano drukarki");
+        else throw new IOException("No printer selected");
     }
 
     private static void chunked(OutputStream os, byte[] data, int size, int pauseMs) throws Exception {
@@ -321,9 +321,9 @@ final class Printer {
     @SuppressWarnings("deprecation")
     private static void sendBt(String mac, byte[] data) throws Exception {
         BluetoothAdapter ad = BluetoothAdapter.getDefaultAdapter();
-        if (ad == null) throw new IOException("To urządzenie nie ma Bluetooth");
-        if (!ad.isEnabled()) throw new IOException("Bluetooth jest wyłączony");
-        try { ad.cancelDiscovery(); } catch (SecurityException e) { throw new IOException("Brak zgody na Bluetooth"); }
+        if (ad == null) throw new IOException("This device has no Bluetooth");
+        if (!ad.isEnabled()) throw new IOException("Bluetooth is turned off");
+        try { ad.cancelDiscovery(); } catch (SecurityException e) { throw new IOException("Bluetooth permission denied"); }
         BluetoothDevice d = ad.getRemoteDevice(mac);
         BluetoothSocket s = null;
         try {
@@ -339,9 +339,9 @@ final class Printer {
             chunked(os, data, 512, 40);
             Thread.sleep(900);   // let the printer finish before the link is closed
         } catch (SecurityException e) {
-            throw new IOException("Brak zgody na Bluetooth");
+            throw new IOException("Bluetooth permission denied");
         } catch (IOException e) {
-            throw new IOException("Nie można połączyć z drukarką Bluetooth (włączona? sparowana?)");
+            throw new IOException("Can't connect to the Bluetooth printer (is it on and paired?)");
         } finally {
             try { if (s != null) s.close(); } catch (Exception ignore) { /* ignore */ }
         }
@@ -355,7 +355,7 @@ final class Printer {
             chunked(s.getOutputStream(), data, 1024, 10);
             Thread.sleep(400);
         } catch (IOException e) {
-            throw new IOException("Nie można połączyć z drukarką " + ip);
+            throw new IOException("Can't connect to printer " + ip);
         } finally {
             try { s.close(); } catch (Exception ignore) { /* ignore */ }
         }
@@ -365,8 +365,8 @@ final class Printer {
         UsbManager um = (UsbManager) c.getSystemService(Context.USB_SERVICE);
         UsbDevice dev = null;
         for (UsbDevice d : um.getDeviceList().values()) if (usbKey(d).equals(key)) dev = d;
-        if (dev == null) throw new IOException("Drukarka USB nie jest podłączona");
-        if (!um.hasPermission(dev)) throw new IOException("Brak zgody USB — wybierz drukarkę ponownie w Ustawieniach");
+        if (dev == null) throw new IOException("USB printer is not connected");
+        if (!um.hasPermission(dev)) throw new IOException("No USB permission — select the printer again in Settings");
         UsbInterface intf = null;
         UsbEndpoint out = null;
         for (int i = 0; i < dev.getInterfaceCount() && out == null; i++) {
@@ -378,16 +378,16 @@ final class Printer {
                 }
             }
         }
-        if (out == null) throw new IOException("Nie znaleziono wyjścia USB drukarki");
+        if (out == null) throw new IOException("USB printer output not found");
         UsbDeviceConnection conn = um.openDevice(dev);
-        if (conn == null) throw new IOException("Nie można otworzyć drukarki USB");
+        if (conn == null) throw new IOException("Can't open the USB printer");
         try {
             conn.claimInterface(intf, true);
             for (int off = 0; off < data.length; off += 4096) {
                 int len = Math.min(4096, data.length - off);
                 byte[] part = new byte[len];
                 System.arraycopy(data, off, part, 0, len);
-                if (conn.bulkTransfer(out, part, len, 5000) < 0) throw new IOException("Błąd wysyłania do drukarki USB");
+                if (conn.bulkTransfer(out, part, len, 5000) < 0) throw new IOException("Error sending data to the USB printer");
             }
             conn.releaseInterface(intf);
         } finally {

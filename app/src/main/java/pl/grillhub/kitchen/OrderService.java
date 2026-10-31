@@ -35,8 +35,8 @@ public class OrderService extends Service implements Store.Listener {
 
     static final String ACTION_ACCEPT_ALL = "pl.grillhub.kitchen.ACCEPT_ALL";
 
-    private static final String CH_SERVICE = "service";
-    private static final String CH_ALERT = "alert_v1";
+    private static final String CH_SERVICE = "service_en";
+    private static final String CH_ALERT = "alert_en";
     private static final int ID_FG = 1, ID_ALERT = 2;
     private static final long POLL_MS = 4000;
 
@@ -62,7 +62,7 @@ public class OrderService extends Service implements Store.Listener {
         nm = (NotificationManager) getSystemService(Context.NOTIFICATION_SERVICE);
         createChannels();
 
-        Notification n = buildForeground("Uruchamianie…");
+        Notification n = buildForeground("Starting…");
         if (Build.VERSION.SDK_INT >= 34) startForeground(ID_FG, n, ServiceInfo.FOREGROUND_SERVICE_TYPE_SPECIAL_USE);
         else startForeground(ID_FG, n);
 
@@ -128,10 +128,10 @@ public class OrderService extends Service implements Store.Listener {
 
         int active = 0;
         for (JSONObject o : Store.orders) if (!o.optBoolean("done")) active++;
-        String text = Store.authError ? "Serwer odrzucił PIN"
-                : Store.offline ? "⚠ Brak połączenia z serwerem"
-                : !Store.loaded ? "Łączenie…"
-                : "Nasłuchiwanie zamówień · aktywne: " + active;
+        String text = Store.authError ? "Server rejected the PIN"
+                : Store.offline ? "⚠ No connection to the server"
+                : !Store.loaded ? "Connecting…"
+                : "Listening for orders · active: " + active;
         if (!text.equals(lastFg)) {
             lastFg = text;
             nm.notify(ID_FG, buildForeground(text));
@@ -147,7 +147,7 @@ public class OrderService extends Service implements Store.Listener {
     private Notification buildForeground(String text) {
         return new Notification.Builder(this, CH_SERVICE)
                 .setSmallIcon(R.drawable.ic_stat)
-                .setContentTitle("Grill Hub · Kuchnia")
+                .setContentTitle("Grill Hub · Kitchen")
                 .setContentText(text)
                 .setOngoing(true)
                 .setShowWhen(false)
@@ -160,12 +160,12 @@ public class OrderService extends Service implements Store.Listener {
         Intent acc = new Intent(this, OrderService.class).setAction(ACTION_ACCEPT_ALL);
         PendingIntent accPi = PendingIntent.getService(this, 1, acc, PendingIntent.FLAG_IMMUTABLE | PendingIntent.FLAG_UPDATE_CURRENT);
         Notification.Action action = new Notification.Action.Builder(
-                Icon.createWithResource(this, R.drawable.ic_stat), "PRZYJMIJ", accPi).build();
+                Icon.createWithResource(this, R.drawable.ic_stat), "ACCEPT", accPi).build();
         PendingIntent open = openApp();
         return new Notification.Builder(this, CH_ALERT)
                 .setSmallIcon(R.drawable.ic_stat)
-                .setContentTitle("🔔 NOWE ZAMÓWIENIE " + nums)
-                .setContentText("Dotknij, aby otworzyć i przyjąć")
+                .setContentTitle("🔔 NEW ORDER " + nums)
+                .setContentText("Tap to open and accept")
                 .setCategory(Notification.CATEGORY_ALARM)
                 .setVisibility(Notification.VISIBILITY_PUBLIC)
                 .setOngoing(true)
@@ -179,11 +179,13 @@ public class OrderService extends Service implements Store.Listener {
     }
 
     private void createChannels() {
-        NotificationChannel s = new NotificationChannel(CH_SERVICE, "Działanie w tle", NotificationManager.IMPORTANCE_LOW);
+        nm.deleteNotificationChannel("service");     // old channels with Polish names
+        nm.deleteNotificationChannel("alert_v1");
+        NotificationChannel s = new NotificationChannel(CH_SERVICE, "Background service", NotificationManager.IMPORTANCE_LOW);
         s.setShowBadge(false);
         nm.createNotificationChannel(s);
 
-        NotificationChannel a = new NotificationChannel(CH_ALERT, "Nowe zamówienia", NotificationManager.IMPORTANCE_HIGH);
+        NotificationChannel a = new NotificationChannel(CH_ALERT, "New orders", NotificationManager.IMPORTANCE_HIGH);
         a.setSound(null, null);          // the alarm is played by the service itself, in a loop
         a.enableVibration(false);
         a.setBypassDnd(true);

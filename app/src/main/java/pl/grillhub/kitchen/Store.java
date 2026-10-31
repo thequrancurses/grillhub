@@ -337,9 +337,9 @@ final class Store {
 
     static String ago(JSONObject o) {
         long m = Math.max(0, (serverNow() - ts(o)) / 60000);
-        if (m < 1) return "przed chwilą";
-        if (m < 60) return m + " min temu";
-        return (m / 60) + " h " + (m % 60) + " min temu";
+        if (m < 1) return "just now";
+        if (m < 60) return m + " min ago";
+        return (m / 60) + " h " + (m % 60) + " min ago";
     }
 
     static String hhmm(JSONObject o) {

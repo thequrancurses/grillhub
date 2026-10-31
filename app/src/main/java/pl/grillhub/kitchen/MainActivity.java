@@ -278,7 +278,7 @@ public class MainActivity extends Activity implements Store.Listener {
         if (!ring.isEmpty()) {
             StringBuilder nums = new StringBuilder();
             for (JSONObject o : ring) { if (nums.length() > 0) nums.append(", "); nums.append("#").append(o.optInt("num")); }
-            TextView b = banner("🔔  NOWE ZAMÓWIENIE " + nums + "  —  PRZYJMIJ", ORANGE, Color.WHITE, v -> Store.acceptAll());
+            TextView b = banner("🔔  NEW ORDER " + nums + "  —  ACCEPT", ORANGE, Color.WHITE, v -> Store.acceptAll());
             b.setTextSize(18);
             AlphaAnimation a = new AlphaAnimation(1f, 0.6f);
             a.setDuration(550);
@@ -287,18 +287,18 @@ public class MainActivity extends Activity implements Store.Listener {
             b.startAnimation(a);
             root.addView(b);
         }
-        if (Store.authError) root.addView(banner("⛔ Serwer odrzucił PIN — zmień PIN w ustawieniach wtyczki albo w aplikacji", RED, Color.WHITE, null));
-        else if (Store.offline) root.addView(banner("⚠ Brak połączenia z serwerem — nowe zamówienia mogą nie dochodzić!", RED, Color.WHITE, null));
+        if (Store.authError) root.addView(banner("⛔ Server rejected the PIN — change the PIN in the plugin settings or in the app", RED, Color.WHITE, null));
+        else if (Store.offline) root.addView(banner("⚠ No connection to the server — new orders may not arrive!", RED, Color.WHITE, null));
 
         if (!Printer.configured(this)) {
-            root.addView(banner("🖨 Nie wybrano drukarki — dotknij, aby wybrać", AMBER, Color.BLACK, v -> openSettings()));
+            root.addView(banner("🖨 No printer selected — tap to choose", AMBER, Color.BLACK, v -> openSettings()));
         } else if (Store.printError != null) {
-            root.addView(banner("🖨 Błąd drukarki: " + Store.printError + " — dotknij", RED, Color.WHITE, v -> openSettings()));
+            root.addView(banner("🖨 Printer error: " + Store.printError + " — tap", RED, Color.WHITE, v -> openSettings()));
         }
 
         NotificationManager nm = (NotificationManager) getSystemService(Context.NOTIFICATION_SERVICE);
         if (!nm.areNotificationsEnabled()) {
-            root.addView(banner("Powiadomienia są wyłączone — dotknij, aby włączyć", AMBER, Color.BLACK, v -> {
+            root.addView(banner("Notifications are turned off — tap to enable", AMBER, Color.BLACK, v -> {
                 try {
                     startActivity(new Intent(Settings.ACTION_APP_NOTIFICATION_SETTINGS).putExtra(Settings.EXTRA_APP_PACKAGE, getPackageName()));
                 } catch (Exception e) { /* ignore */ }
@@ -306,7 +306,7 @@ public class MainActivity extends Activity implements Store.Listener {
         }
         PowerManager pm = (PowerManager) getSystemService(Context.POWER_SERVICE);
         if (!pm.isIgnoringBatteryOptimizations(getPackageName())) {
-            root.addView(banner("Aby działać w tle, wyłącz optymalizację baterii — dotknij", AMBER, Color.BLACK, v -> {
+            root.addView(banner("To keep running in the background, turn off battery optimization — tap", AMBER, Color.BLACK, v -> {
                 try {
                     startActivityForResult(new Intent(Settings.ACTION_REQUEST_IGNORE_BATTERY_OPTIMIZATIONS,
                             Uri.parse("package:" + getPackageName())), RC_BATT);
@@ -327,8 +327,8 @@ public class MainActivity extends Activity implements Store.Listener {
         logo.setImageResource(R.mipmap.ic_launcher);
         head.addView(logo, lp(dp(44), dp(44), 0f, 0, 0, 12, 0));
         LinearLayout titles = vbox();
-        titles.addView(tv("Grill Hub · Kuchnia", 20, TEXT, true));
-        titles.addView(tv("Dzisiaj: " + cnt + " zamówień · " + Store.money(sum) + " zł", 13, DIM, false));
+        titles.addView(tv("Grill Hub · Kitchen", 20, TEXT, true));
+        titles.addView(tv("Today: " + cnt + " orders · " + Store.money(sum) + "PLN", 13, DIM, false));
         head.addView(titles, lp(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f, 0, 0, 0, 0));
         boolean bad = Store.offline || Store.authError;
         head.addView(chip(bad ? "● OFFLINE" : "● ONLINE", bad ? RED_DIM : 0x2622C55E, bad ? RED : GREEN));
@@ -338,10 +338,10 @@ public class MainActivity extends Activity implements Store.Listener {
         LinearLayout tabs = hbox();
         tabs.setPadding(dp(12), 0, dp(12), dp(8));
         String[][] T = {
-                {"orders", "Zamówienia", String.valueOf(act.size())},
-                {"sched", "Zaplanowane", String.valueOf(sch.size())},
-                {"history", "Historia", "0"},
-                {"settings", "⚙ Ustawienia", "0"}};
+                {"orders", "Orders", String.valueOf(act.size())},
+                {"sched", "Scheduled", String.valueOf(sch.size())},
+                {"history", "History", "0"},
+                {"settings", "⚙ Settings", "0"}};
         for (final String[] t : T) {
             boolean on = tab.equals(t[0]);
             String label = t[1] + (!t[2].equals("0") ? "  " + t[2] : "");
@@ -377,7 +377,7 @@ public class MainActivity extends Activity implements Store.Listener {
             TextView icon = tv(tab.equals("orders") ? "🍽" : tab.equals("sched") ? "🕒" : "📋", 54, TEXT, false);
             icon.setGravity(Gravity.CENTER);
             empty.addView(icon);
-            TextView msg = tv(tab.equals("orders") ? "Czekamy na zamówienia…" : tab.equals("sched") ? "Brak zaplanowanych zamówień" : "Brak historii", 18, DIM, false);
+            TextView msg = tv(tab.equals("orders") ? "Waiting for orders…" : tab.equals("sched") ? "No scheduled orders" : "No history", 18, DIM, false);
             msg.setGravity(Gravity.CENTER);
             msg.setPadding(0, dp(10), 0, 0);
             empty.addView(msg);
@@ -436,21 +436,21 @@ public class MainActivity extends Activity implements Store.Listener {
 
         // type chips
         LinearLayout chips = hbox();
-        chips.addView(dine ? chip("🍽  NA MIEJSCU" + (o.optString("table").isEmpty() ? "" : " · STOLIK " + o.optString("table")), BLUE_DIM, BLUE)
-                : chip("🛍  ODBIÓR", PURPLE_DIM, PURPLE));
+        chips.addView(dine ? chip("🍽  DINE IN" + (o.optString("table").isEmpty() ? "" : " · TABLE " + o.optString("table")), BLUE_DIM, BLUE)
+                : chip("🛍  PICKUP", PURPLE_DIM, PURPLE));
         String src = o.optString("src", "");
         if (!src.isEmpty() && !src.equals("direct")) chips.addView(chip(src, SURFACE2, DIM), lp(ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT, 0f, 8, 0, 0, 0));
         c.addView(chips, lp(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT, 0f, 0, 8, 0, 0));
 
         if (scheduled) {
-            c.addView(tv("🕒  Odbiór za " + Store.inMin(Store.etaMs(o)) + " (" + o.optString("eta") + ")", 15, ORANGE, true),
+            c.addView(tv("🕒  Pickup in " + Store.inMin(Store.etaMs(o)) + " (" + o.optString("eta") + ")", 15, ORANGE, true),
                     lp(ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT, 0f, 0, 8, 0, 0));
         }
         if (!dine) {
             String who = o.optString("name") + (o.optString("phone").isEmpty() ? "" : "  ·  " + o.optString("phone"));
             c.addView(tv(who, 16, TEXT, true), lp(ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT, 0f, 0, 8, 0, 0));
             if (!o.optString("eta").isEmpty() && !scheduled)
-                c.addView(tv("Godzina odbioru: " + o.optString("eta"), 14, AMBER, true));
+                c.addView(tv("Pickup time: " + o.optString("eta"), 14, AMBER, true));
         }
 
         addDivider(c);
@@ -488,39 +488,39 @@ public class MainActivity extends Activity implements Store.Listener {
         // fees + total
         LinearLayout foot = hbox();
         StringBuilder fee = new StringBuilder();
-        if (o.optDouble("deposit", 0) > 0) fee.append("Kaucja +").append(Store.money(o.optDouble("deposit"))).append(" zł\n");
-        if (o.optDouble("pack", 0) > 0) fee.append("Opakowanie +").append(Store.money(o.optDouble("pack"))).append(" zł\n");
-        if (o.optDouble("combo", 0) > 0) fee.append("Zestaw −").append(Store.money(o.optDouble("combo"))).append(" zł\n");
-        if (o.optDouble("coupon", 0) > 0) fee.append("Kod ").append(o.optString("code")).append(" −").append(Store.money(o.optDouble("coupon"))).append(" zł\n");
+        if (o.optDouble("deposit", 0) > 0) fee.append("Deposit +").append(Store.money(o.optDouble("deposit"))).append(" PLN\n");
+        if (o.optDouble("pack", 0) > 0) fee.append("Packaging +").append(Store.money(o.optDouble("pack"))).append(" PLN\n");
+        if (o.optDouble("combo", 0) > 0) fee.append("Combo −").append(Store.money(o.optDouble("combo"))).append(" PLN\n");
+        if (o.optDouble("coupon", 0) > 0) fee.append("Code ").append(o.optString("code")).append(" −").append(Store.money(o.optDouble("coupon"))).append(" PLN\n");
         TextView f = tv(fee.toString().trim(), 12, DIM, false);
         foot.addView(f, lp(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f, 0, 0, 0, 0));
-        foot.addView(tv(Store.money(o.optDouble("total")) + " zł", 24, TEXT, true));
+        foot.addView(tv(Store.money(o.optDouble("total")) + "PLN", 24, TEXT, true));
         c.addView(foot);
 
         // actions
         if (done) {
-            c.addView(button("↩  Przywróć", SURFACE2, 16, v -> Store.setDone(id, false, null)),
+            c.addView(button("↩  Restore", SURFACE2, 16, v -> Store.setDone(id, false, null)),
                     lp(ViewGroup.LayoutParams.MATCH_PARENT, dp(52), 0f, 0, 12, 0, 0));
         } else if (ringing) {
-            TextView acc = button("✓  PRZYJMIJ ZAMÓWIENIE", ORANGE, 19, v -> Store.accept(id));
+            TextView acc = button("✓  ACCEPT ORDER", ORANGE, 19, v -> Store.accept(id));
             c.addView(acc, lp(ViewGroup.LayoutParams.MATCH_PARENT, dp(66), 0f, 0, 12, 0, 0));
         } else {
             long readyAt = o.optLong("ready_at");
             boolean hasEta = !dine && !o.optString("eta").isEmpty();
             if (readyAt > 0 && !hasEta) {
                 long m = (long) Math.ceil((readyAt * 1000 - Store.serverNow()) / 60000.0);
-                c.addView(tv(m > 0 ? "⏱  Obiecane: za " + m + " min" : "⏱  Obiecany czas minął", 14, m > 0 ? TEXT : RED, true),
+                c.addView(tv(m > 0 ? "⏱  Promised: in " + m + " min" : "⏱  Promised time passed", 14, m > 0 ? TEXT : RED, true),
                         lp(ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT, 0f, 0, 10, 0, 0));
                 LinearLayout pr = hbox();
                 for (final int mins : new int[]{5, 10, 15, 20, 30}) {
                     pr.addView(button("+" + mins + "′", SURFACE2, 15, v -> Store.setPrep(id, mins, r -> {
-                        if (r == null) Toast.makeText(this, "Błąd sieci", Toast.LENGTH_SHORT).show();
+                        if (r == null) Toast.makeText(this, "Network error", Toast.LENGTH_SHORT).show();
                     })), lp(0, dp(44), 1f, 2, 6, 2, 0));
                 }
                 c.addView(pr);
             }
-            c.addView(button("✓  GOTOWE", GREEN, 18, v -> Store.setDone(id, true, r -> {
-                if (r == null) Toast.makeText(this, "Błąd sieci", Toast.LENGTH_SHORT).show();
+            c.addView(button("✓  READY", GREEN, 18, v -> Store.setDone(id, true, r -> {
+                if (r == null) Toast.makeText(this, "Network error", Toast.LENGTH_SHORT).show();
             })), lp(ViewGroup.LayoutParams.MATCH_PARENT, dp(58), 0f, 0, 12, 0, 0));
         }
         return c;
@@ -537,12 +537,12 @@ public class MainActivity extends Activity implements Store.Listener {
 
     private void printOrder(JSONObject o) {
         if (!Printer.configured(this)) {
-            Toast.makeText(this, "Najpierw wybierz drukarkę w Ustawieniach", Toast.LENGTH_LONG).show();
+            Toast.makeText(this, "Choose a printer in Settings first", Toast.LENGTH_LONG).show();
             openSettings();
             return;
         }
         Printer.printManual(this, o, r -> Toast.makeText(this,
-                r != null ? "Wysłano do drukarki ✓" : "Błąd drukarki: " + Store.printError, Toast.LENGTH_LONG).show());
+                r != null ? "Sent to printer ✓" : "Printer error: " + Store.printError, Toast.LENGTH_LONG).show());
     }
 
     private String[] btPerms() {
@@ -599,7 +599,7 @@ public class MainActivity extends Activity implements Store.Listener {
                 if (d.getBondState() == BluetoothDevice.BOND_NONE) d.createBond();   // shows the pairing prompt
             }
         } catch (Exception e) { /* ignore */ }
-        Toast.makeText(this, "Wybrano: " + f.name, Toast.LENGTH_SHORT).show();
+        Toast.makeText(this, "Selected: " + f.name, Toast.LENGTH_SHORT).show();
         render();
     }
 
@@ -629,7 +629,7 @@ public class MainActivity extends Activity implements Store.Listener {
     private void toggleRow(LinearLayout parent, String label, final String key) {
         final boolean on = Printer.on(this, key);
         LinearLayout r = settingRow(label);
-        TextView pill = tv(on ? "WŁ" : "WYŁ", 13, on ? Color.WHITE : DIM, true);
+        TextView pill = tv(on ? "ON" : "OFF", 13, on ? Color.WHITE : DIM, true);
         pill.setGravity(Gravity.CENTER);
         pill.setBackground(shape(on ? GREEN : SURFACE2, 20));
         pill.setPadding(dp(16), dp(7), dp(16), dp(7));
@@ -655,8 +655,8 @@ public class MainActivity extends Activity implements Store.Listener {
             in.setText(Printer.get(this, key));
             in.setSelection(in.getText().length());
             new AlertDialog.Builder(this).setTitle(title).setView(in)
-                    .setPositiveButton("Zapisz", (d, w) -> { Printer.set(this, key, in.getText().toString().trim()); render(); })
-                    .setNegativeButton("Anuluj", null).show();
+                    .setPositiveButton("Save", (d, w) -> { Printer.set(this, key, in.getText().toString().trim()); render(); })
+                    .setNegativeButton("Cancel", null).show();
         });
         parent.addView(r);
     }
@@ -666,26 +666,26 @@ public class MainActivity extends Activity implements Store.Listener {
         box.setPadding(dp(6), 0, dp(6), 0);
 
         // ---- printer
-        box.addView(sectionTitle("Drukarka"));
+        box.addView(sectionTitle("Printer"));
         LinearLayout p = panel();
         boolean has = Printer.configured(this);
-        TextView cur = tv(has ? "✓  " + Printer.get(this, "name") : "Nie wybrano drukarki", 18, has ? GREEN : AMBER, true);
+        TextView cur = tv(has ? "✓  " + Printer.get(this, "name") : "No printer selected", 18, has ? GREEN : AMBER, true);
         p.addView(cur);
         if (has) p.addView(tv(Printer.typeLabel(Printer.get(this, "type")) + " · " + Printer.get(this, "addr"), 13, DIM, false));
 
         LinearLayout btns = hbox();
-        btns.addView(button(scanning ? "⏳  Szukanie…" : "🔍  Szukaj drukarek", ORANGE, 16, v -> { if (!scanning) scanClick(); }),
+        btns.addView(button(scanning ? "⏳  Searching…" : "🔍  Find printers", ORANGE, 16, v -> { if (!scanning) scanClick(); }),
                 lp(0, dp(52), 1f, 0, 0, 4, 0));
-        btns.addView(button("🖨  Test wydruku", SURFACE2, 16, v -> {
-            if (!Printer.configured(this)) { Toast.makeText(this, "Najpierw wybierz drukarkę", Toast.LENGTH_SHORT).show(); return; }
+        btns.addView(button("🖨  Test print", SURFACE2, 16, v -> {
+            if (!Printer.configured(this)) { Toast.makeText(this, "Choose a printer first", Toast.LENGTH_SHORT).show(); return; }
             Printer.print(this, Printer.testOrder(), r -> Toast.makeText(this,
-                    r != null ? "Wysłano do drukarki ✓" : "Błąd drukarki: " + Store.printError, Toast.LENGTH_LONG).show());
+                    r != null ? "Sent to printer ✓" : "Printer error: " + Store.printError, Toast.LENGTH_LONG).show());
         }), lp(0, dp(52), 1f, 4, 0, 0, 0));
         p.addView(btns, lp(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT, 0f, 0, 12, 0, 0));
 
-        if (scanning) p.addView(tv("Szukam: Bluetooth · Wi-Fi/LAN · USB…", 13, DIM, false), lp(ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT, 0f, 0, 10, 0, 0));
+        if (scanning) p.addView(tv("Searching: Bluetooth · Wi-Fi/LAN · USB…", 13, DIM, false), lp(ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT, 0f, 0, 10, 0, 0));
         if (scanned && !scanning && found.isEmpty())
-            p.addView(tv("Nie znaleziono drukarek. Sprawdź, czy drukarka jest włączona, a Bluetooth i Wi-Fi tabletu aktywne.", 14, AMBER, false), lp(ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT, 0f, 0, 10, 0, 0));
+            p.addView(tv("No printers found. Make sure the printer is on and the tablet's Bluetooth and Wi-Fi are active.", 14, AMBER, false), lp(ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT, 0f, 0, 10, 0, 0));
 
         for (final PrinterScan.Found f : found) {
             boolean sel = has && Printer.get(this, "type").equals(f.type) && Printer.get(this, "addr").equals(f.addr);
@@ -699,17 +699,17 @@ public class MainActivity extends Activity implements Store.Listener {
             col.addView(tv(f.name, 16, TEXT, true));
             col.addView(tv(Printer.typeLabel(f.type) + " · " + f.extra, 12, DIM, false));
             row.addView(col, lp(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f, 0, 0, 0, 0));
-            row.addView(tv(sel ? "✓" : "Wybierz", sel ? 20 : 14, sel ? GREEN : ORANGE, true));
+            row.addView(tv(sel ? "✓" : "Select", sel ? 20 : 14, sel ? GREEN : ORANGE, true));
             p.addView(row, lp(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT, 0f, 0, 8, 0, 0));
         }
         box.addView(p);
 
         // ---- receipt
-        box.addView(sectionTitle("Paragon"));
+        box.addView(sectionTitle("Receipt"));
         LinearLayout q = panel();
-        toggleRow(q, "Drukuj automatycznie nowe zamówienia", "auto");
+        toggleRow(q, "Print new orders automatically", "auto");
 
-        LinearLayout paper = settingRow("Szerokość papieru");
+        LinearLayout paper = settingRow("Paper width");
         for (final String w : new String[]{"80", "58"}) {
             boolean on = Printer.get(this, "paper").equals(w);
             TextView t = tv(w + " mm", 14, on ? Color.WHITE : DIM, true);
@@ -722,7 +722,7 @@ public class MainActivity extends Activity implements Store.Listener {
         }
         q.addView(paper);
 
-        LinearLayout copies = settingRow("Liczba kopii");
+        LinearLayout copies = settingRow("Copies");
         int n = 1;
         try { n = Integer.parseInt(Printer.get(this, "copies")); } catch (Exception e) { /* default */ }
         final int cn = n;
@@ -735,15 +735,15 @@ public class MainActivity extends Activity implements Store.Listener {
         copies.addView(plus, lp(dp(44), dp(40), 0f, 0, 0, 0, 0));
         q.addView(copies);
 
-        toggleRow(q, "Obetnij papier po wydruku", "cut");
-        toggleRow(q, "Pokaż ceny i sumę", "show_prices");
-        toggleRow(q, "Pokaż telefon klienta", "show_phone");
-        toggleRow(q, "Duży numer zamówienia", "big_number");
-        textRow(q, "Nagłówek", "header", "Nagłówek paragonu");
-        textRow(q, "Stopka", "footer", "Stopka paragonu");
+        toggleRow(q, "Cut paper after printing", "cut");
+        toggleRow(q, "Show prices and total", "show_prices");
+        toggleRow(q, "Show customer phone", "show_phone");
+        toggleRow(q, "Large order number", "big_number");
+        textRow(q, "Header", "header", "Receipt header");
+        textRow(q, "Footer", "footer", "Receipt footer");
         box.addView(q);
 
-        TextView hint = tv("Drukarka Bluetooth musi być włączona (przy pierwszym użyciu pojawi się prośba o sparowanie). Drukarka sieciowa musi mieć port 9100 i być w tym samym Wi-Fi co tablet.", 12, DIM, false);
+        TextView hint = tv("A Bluetooth printer must be on (the first time, you will be asked to pair it). A network printer needs port 9100 and must be on the same Wi-Fi as the tablet.", 12, DIM, false);
         hint.setPadding(dp(6), dp(12), dp(6), 0);
         box.addView(hint);
         return box;

@@ -90,7 +90,7 @@ final class PrinterScan {
                     if (it.getInterfaceClass() == UsbConstants.USB_CLASS_PRINTER || it.getInterfaceClass() == UsbConstants.USB_CLASS_VENDOR_SPEC) maybe = true;
                 }
                 if (!maybe) continue;
-                String name = d.getProductName() != null ? d.getProductName() : "Drukarka USB";
+                String name = d.getProductName() != null ? d.getProductName() : "USB printer";
                 out.add(new Found("usb", Printer.usbKey(d), name, d.getManufacturerName() != null ? d.getManufacturerName() : "USB"));
             }
         } catch (Exception e) { /* ignore */ }
@@ -110,7 +110,7 @@ final class PrinterScan {
             Collections.sort(bonded, (a, b) -> (isPrinter(b) ? 1 : 0) - (isPrinter(a) ? 1 : 0));
             for (BluetoothDevice d : bonded) {
                 seen.add(d.getAddress());
-                cb.found(new Found("bt", d.getAddress(), nameOf(d), "sparowana" + (isPrinter(d) ? " · drukarka" : "")));
+                cb.found(new Found("bt", d.getAddress(), nameOf(d), "paired" + (isPrinter(d) ? " · printer" : "")));
             }
             btCtx = c;
             btReceiver = new BroadcastReceiver() {
@@ -119,7 +119,7 @@ final class PrinterScan {
                         BluetoothDevice d = i.getParcelableExtra(BluetoothDevice.EXTRA_DEVICE);
                         if (d != null && !seen.contains(d.getAddress())) {
                             seen.add(d.getAddress());
-                            cb.found(new Found("bt", d.getAddress(), nameOf(d), "w pobliżu · " + (isPrinter(d) ? "drukarka" : "urządzenie")));
+                            cb.found(new Found("bt", d.getAddress(), nameOf(d), "nearby · " + (isPrinter(d) ? "printer" : "device")));
                         }
                     } else if (BluetoothAdapter.ACTION_DISCOVERY_FINISHED.equals(i.getAction())) {
                         try { c.unregisterReceiver(this); } catch (Exception e) { /* ignore */ }
@@ -183,7 +183,7 @@ final class PrinterScan {
                     Socket s = new Socket();
                     try {
                         s.connect(new InetSocketAddress(ip, 9100), 500);
-                        main.post(() -> cb.found(new Found("net", ip, "Drukarka sieciowa", ip + " · port 9100")));
+                        main.post(() -> cb.found(new Found("net", ip, "Network printer", ip + " · port 9100")));
                     } catch (Exception e) { /* closed */ }
                     finally { try { s.close(); } catch (Exception e) { /* ignore */ } }
                 });
