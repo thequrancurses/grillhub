@@ -50,6 +50,7 @@ public class OrderService extends Service implements Store.Listener {
     private final Runnable tick = new Runnable() {
         @Override public void run() {
             Store.poll();
+            Printer.autoPrint(OrderService.this);
             handler.postDelayed(this, POLL_MS);
         }
     };
@@ -106,6 +107,7 @@ public class OrderService extends Service implements Store.Listener {
     // ------------------------------------------------------------ state -> alarm + notifications
 
     private void sync() {
+        Printer.autoPrint(this);
         List<JSONObject> ring = Store.ringing();
         if (ring.isEmpty()) {
             stopAlarm();

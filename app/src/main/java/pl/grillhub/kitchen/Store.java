@@ -44,9 +44,11 @@ final class Store {
 
     static final List<JSONObject> orders = new ArrayList<>();
     static boolean offline = false, authError = false, loaded = false;
+    static String printError = null;
     static long srvOff = 0;
 
     private static final Set<Integer> acked = new HashSet<>();
+    private static final Set<Integer> printed = new HashSet<>();
     private static final List<Listener> listeners = new ArrayList<>();
     private static final Handler main = new Handler(Looper.getMainLooper());
     private static final ExecutorService net = Executors.newFixedThreadPool(3);
@@ -62,8 +64,13 @@ final class Store {
         if (inited) return;
         inited = true;
         prefs = c.getApplicationContext().getSharedPreferences("kitchen", Context.MODE_PRIVATE);
-        for (String s : prefs.getString("acked", "").split(",")) {
-            try { if (!s.isEmpty()) acked.add(Integer.parseInt(s)); } catch (Exception e) { /* ignore */ }
+        load("acked", acked);
+        load("printed", printed);
+    }
+
+    private static void load(String key, Set<Integer> into) {
+        for (String s : prefs.getString(key, "").split(",")) {
+            try { if (!s.isEmpty()) into.add(Integer.parseInt(s)); } catch (Exception e) { /* ignore */ }
         }
     }
 
@@ -74,15 +81,17 @@ final class Store {
         for (Listener l : new ArrayList<>(listeners)) l.onChange();
     }
 
-    private static void persistAcked() {
-        if (acked.size() > 500) {
-            List<Integer> all = new ArrayList<>(acked);
+    private static void persistAcked() { persist("acked", acked); }
+
+    private static void persist(String key, Set<Integer> set) {
+        if (set.size() > 500) {
+            List<Integer> all = new ArrayList<>(set);
             Collections.sort(all);
-            for (int i = 0; i < all.size() - 400; i++) acked.remove(all.get(i));
+            for (int i = 0; i < all.size() - 400; i++) set.remove(all.get(i));
         }
         StringBuilder sb = new StringBuilder();
-        for (int id : acked) { if (sb.length() > 0) sb.append(','); sb.append(id); }
-        prefs.edit().putString("acked", sb.toString()).apply();
+        for (int id : set) { if (sb.length() > 0) sb.append(','); sb.append(id); }
+        prefs.edit().putString(key, sb.toString()).apply();
     }
 
     // ------------------------------------------------------------ polling
@@ -145,9 +154,9 @@ final class Store {
             orders.add(o);
             changed = true;
             lastId = Math.max(lastId, id);
-            if (first) acked.add(id);   // very first run: old orders must not ring
+            if (first) { acked.add(id); printed.add(id); }   // very first run: old orders must not ring or print
         }
-        if (first) { prefs.edit().putBoolean("init", true).apply(); persistAcked(); }
+        if (first) { prefs.edit().putBoolean("init", true).apply(); persistAcked(); persist("printed", printed); }
         Collections.sort(orders, (a, b) -> a.optInt("id") - b.optInt("id"));
         return changed;
     }
@@ -186,6 +195,36 @@ final class Store {
         for (JSONObject o : ringing()) acked.add(o.optInt("id"));
         persistAcked();
         notifyChange();
+    }
+
+    // ------------------------------------------------------------ printing state
+
+    static List<JSONObject> unprinted() {
+        List<JSONObject> out = new ArrayList<>();
+        long now = serverNow();
+        for (JSONObject o : orders) {
+            if (o.optBoolean("done")) continue;
+            if (printed.contains(o.optInt("id"))) continue;
+            if (now - ts(o) > MAX_RING_AGE) continue;
+            out.add(o);
+        }
+        return out;
+    }
+
+    static void markPrinted(int id) {
+        if (printed.add(id)) persist("printed", printed);
+    }
+
+    /** e.g. right after the first printer is chosen: don't print the backlog */
+    static void markAllPrinted() {
+        for (JSONObject o : orders) printed.add(o.optInt("id"));
+        persist("printed", printed);
+    }
+
+    static void setPrintError(String e) {
+        boolean changed = (e == null) != (printError == null) || (e != null && !e.equals(printError));
+        printError = e;
+        if (changed) notifyChange();
     }
 
     // ------------------------------------------------------------ actions

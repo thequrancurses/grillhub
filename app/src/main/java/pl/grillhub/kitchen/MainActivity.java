@@ -1,6 +1,14 @@
 package pl.grillhub.kitchen;
 
 import android.app.Activity;
+import android.app.AlertDialog;
+import android.app.PendingIntent;
+import android.bluetooth.BluetoothAdapter;
+import android.bluetooth.BluetoothDevice;
+import android.hardware.usb.UsbDevice;
+import android.hardware.usb.UsbManager;
+import android.text.InputType;
+import android.widget.EditText;
 import android.app.NotificationManager;
 import android.content.Context;
 import android.content.Intent;
@@ -50,7 +58,9 @@ public class MainActivity extends Activity implements Store.Listener {
             BLUE = 0xFF60A5FA, BLUE_DIM = 0x2660A5FA,
             PURPLE = 0xFFC084FC, PURPLE_DIM = 0x26C084FC;
 
-    private static final int RC_NOTIF = 1, RC_BATT = 2, RC_FSI = 3;
+    private static final int RC_NOTIF = 1, RC_BATT = 2, RC_FSI = 3, RC_BT = 4;
+    private final List<PrinterScan.Found> found = new ArrayList<>();
+    private boolean scanning = false, scanned = false;
 
     private final Handler ui = new Handler(Looper.getMainLooper());
     private SharedPreferences prefs;
@@ -108,6 +118,8 @@ public class MainActivity extends Activity implements Store.Listener {
     protected void onStop() {
         Store.removeListener(this);
         ui.removeCallbacks(clock);
+        PrinterScan.stop();
+        scanning = false;
         super.onStop();
     }
 
@@ -163,6 +175,7 @@ public class MainActivity extends Activity implements Store.Listener {
     @Override
     public void onRequestPermissionsResult(int code, String[] perms, int[] res) {
         super.onRequestPermissionsResult(code, perms, res);
+        if (code == RC_BT) { startScan(btGranted()); return; }
         startListener();
         setupNext();
     }
@@ -277,6 +290,12 @@ public class MainActivity extends Activity implements Store.Listener {
         if (Store.authError) root.addView(banner("⛔ Serwer odrzucił PIN — zmień PIN w ustawieniach wtyczki albo w aplikacji", RED, Color.WHITE, null));
         else if (Store.offline) root.addView(banner("⚠ Brak połączenia z serwerem — nowe zamówienia mogą nie dochodzić!", RED, Color.WHITE, null));
 
+        if (!Printer.configured(this)) {
+            root.addView(banner("🖨 Nie wybrano drukarki — dotknij, aby wybrać", AMBER, Color.BLACK, v -> openSettings()));
+        } else if (Store.printError != null) {
+            root.addView(banner("🖨 Błąd drukarki: " + Store.printError + " — dotknij", RED, Color.WHITE, v -> openSettings()));
+        }
+
         NotificationManager nm = (NotificationManager) getSystemService(Context.NOTIFICATION_SERVICE);
         if (!nm.areNotificationsEnabled()) {
             root.addView(banner("Powiadomienia są wyłączone — dotknij, aby włączyć", AMBER, Color.BLACK, v -> {
@@ -321,11 +340,14 @@ public class MainActivity extends Activity implements Store.Listener {
         String[][] T = {
                 {"orders", "Zamówienia", String.valueOf(act.size())},
                 {"sched", "Zaplanowane", String.valueOf(sch.size())},
-                {"history", "Historia", "0"}};
+                {"history", "Historia", "0"},
+                {"settings", "⚙ Ustawienia", "0"}};
         for (final String[] t : T) {
             boolean on = tab.equals(t[0]);
             String label = t[1] + (!t[2].equals("0") ? "  " + t[2] : "");
-            TextView tb = tv(label, 15, on ? Color.WHITE : DIM, true);
+            TextView tb = tv(label, 14, on ? Color.WHITE : DIM, true);
+            tb.setSingleLine(true);
+            tb.setEllipsize(android.text.TextUtils.TruncateAt.END);
             tb.setGravity(Gravity.CENTER);
             tb.setBackground(ripple(on ? ORANGE : SURFACE2, 22));
             tb.setClickable(true);
@@ -346,7 +368,9 @@ public class MainActivity extends Activity implements Store.Listener {
 
         LinearLayout box = vbox();
         box.setPadding(dp(8), dp(4), dp(8), dp(24));
-        if (list.isEmpty()) {
+        if (tab.equals("settings")) {
+            box.addView(settingsView());
+        } else if (list.isEmpty()) {
             LinearLayout empty = vbox();
             empty.setGravity(Gravity.CENTER);
             empty.setPadding(0, dp(90), 0, 0);
@@ -399,6 +423,7 @@ public class MainActivity extends Activity implements Store.Listener {
         // number + time
         LinearLayout head = hbox();
         head.addView(tv("#" + o.optInt("num"), 32, ORANGE, true), lp(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f, 0, 0, 0, 0));
+        head.addView(button("🖨", SURFACE2, 18, v -> printOrder(o)), lp(dp(50), dp(42), 0f, 0, 0, 12, 0));
         LinearLayout when = vbox();
         TextView t1 = tv(Store.hhmm(o), 18, TEXT, true);
         t1.setGravity(Gravity.END);
@@ -499,6 +524,229 @@ public class MainActivity extends Activity implements Store.Listener {
             })), lp(ViewGroup.LayoutParams.MATCH_PARENT, dp(58), 0f, 0, 12, 0, 0));
         }
         return c;
+    }
+
+    // ------------------------------------------------------------ printing UI
+
+    private void openSettings() {
+        tab = "settings";
+        prefs.edit().putString("tab", tab).apply();
+        sv = null;
+        render();
+    }
+
+    private void printOrder(JSONObject o) {
+        if (!Printer.configured(this)) {
+            Toast.makeText(this, "Najpierw wybierz drukarkę w Ustawieniach", Toast.LENGTH_LONG).show();
+            openSettings();
+            return;
+        }
+        Printer.printManual(this, o, r -> Toast.makeText(this,
+                r != null ? "Wysłano do drukarki ✓" : "Błąd drukarki: " + Store.printError, Toast.LENGTH_LONG).show());
+    }
+
+    private String[] btPerms() {
+        return Build.VERSION.SDK_INT >= 31
+                ? new String[]{"android.permission.BLUETOOTH_CONNECT", "android.permission.BLUETOOTH_SCAN"}
+                : new String[]{"android.permission.ACCESS_FINE_LOCATION"};
+    }
+
+    private boolean btGranted() {
+        for (String p : btPerms()) if (checkSelfPermission(p) != PackageManager.PERMISSION_GRANTED) return false;
+        return true;
+    }
+
+    private void scanClick() {
+        if (!btGranted()) { requestPermissions(btPerms(), RC_BT); return; }
+        startScan(true);
+    }
+
+    private void startScan(boolean bt) {
+        found.clear();
+        scanning = true;
+        scanned = true;
+        render();
+        PrinterScan.start(this, bt, new PrinterScan.Cb() {
+            @Override public void found(PrinterScan.Found f) {
+                for (PrinterScan.Found x : found) if (x.type.equals(f.type) && x.addr.equals(f.addr)) return;
+                found.add(f);
+                render();
+            }
+            @Override public void done() {
+                scanning = false;
+                render();
+            }
+        });
+    }
+
+    private void choose(PrinterScan.Found f) {
+        boolean first = !Printer.configured(this);
+        Printer.select(this, f.type, f.addr, f.name);
+        if (first) Store.markAllPrinted();      // don't print the old backlog
+        Store.setPrintError(null);
+        try {
+            if (f.type.equals("usb")) {
+                UsbManager um = (UsbManager) getSystemService(Context.USB_SERVICE);
+                for (UsbDevice d : um.getDeviceList().values()) {
+                    if (Printer.usbKey(d).equals(f.addr) && !um.hasPermission(d)) {
+                        um.requestPermission(d, PendingIntent.getBroadcast(this, 0,
+                                new Intent("pl.grillhub.kitchen.USB").setPackage(getPackageName()),
+                                Build.VERSION.SDK_INT >= 31 ? PendingIntent.FLAG_MUTABLE : 0));
+                    }
+                }
+            } else if (f.type.equals("bt")) {
+                BluetoothDevice d = BluetoothAdapter.getDefaultAdapter().getRemoteDevice(f.addr);
+                if (d.getBondState() == BluetoothDevice.BOND_NONE) d.createBond();   // shows the pairing prompt
+            }
+        } catch (Exception e) { /* ignore */ }
+        Toast.makeText(this, "Wybrano: " + f.name, Toast.LENGTH_SHORT).show();
+        render();
+    }
+
+    private TextView sectionTitle(String s) {
+        TextView t = tv(s.toUpperCase(), 12, ORANGE, true);
+        t.setLetterSpacing(0.08f);
+        t.setPadding(dp(6), dp(14), 0, dp(6));
+        return t;
+    }
+
+    private LinearLayout panel() {
+        LinearLayout p = vbox();
+        p.setPadding(dp(14), dp(12), dp(14), dp(12));
+        GradientDrawable g = shape(SURFACE, 16);
+        g.setStroke(dp(1), LINE);
+        p.setBackground(g);
+        return p;
+    }
+
+    private LinearLayout settingRow(String label) {
+        LinearLayout r = hbox();
+        r.setMinimumHeight(dp(48));
+        r.addView(tv(label, 16, TEXT, false), lp(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f, 0, 0, 8, 0));
+        return r;
+    }
+
+    private void toggleRow(LinearLayout parent, String label, final String key) {
+        final boolean on = Printer.on(this, key);
+        LinearLayout r = settingRow(label);
+        TextView pill = tv(on ? "WŁ" : "WYŁ", 13, on ? Color.WHITE : DIM, true);
+        pill.setGravity(Gravity.CENTER);
+        pill.setBackground(shape(on ? GREEN : SURFACE2, 20));
+        pill.setPadding(dp(16), dp(7), dp(16), dp(7));
+        r.addView(pill);
+        r.setClickable(true);
+        r.setOnClickListener(v -> { Printer.setOn(this, key, !on); render(); });
+        parent.addView(r);
+    }
+
+    private void textRow(LinearLayout parent, String label, final String key, final String title) {
+        LinearLayout r = settingRow(label);
+        String v = Printer.get(this, key);
+        TextView val = tv(v.isEmpty() ? "—" : v, 15, DIM, false);
+        val.setSingleLine(true);
+        val.setEllipsize(android.text.TextUtils.TruncateAt.END);
+        val.setMaxWidth(dp(220));
+        r.addView(val);
+        r.addView(tv("  ›", 18, DIM, true));
+        r.setClickable(true);
+        r.setOnClickListener(x -> {
+            final EditText in = new EditText(this);
+            in.setInputType(InputType.TYPE_CLASS_TEXT);
+            in.setText(Printer.get(this, key));
+            in.setSelection(in.getText().length());
+            new AlertDialog.Builder(this).setTitle(title).setView(in)
+                    .setPositiveButton("Zapisz", (d, w) -> { Printer.set(this, key, in.getText().toString().trim()); render(); })
+                    .setNegativeButton("Anuluj", null).show();
+        });
+        parent.addView(r);
+    }
+
+    private View settingsView() {
+        LinearLayout box = vbox();
+        box.setPadding(dp(6), 0, dp(6), 0);
+
+        // ---- printer
+        box.addView(sectionTitle("Drukarka"));
+        LinearLayout p = panel();
+        boolean has = Printer.configured(this);
+        TextView cur = tv(has ? "✓  " + Printer.get(this, "name") : "Nie wybrano drukarki", 18, has ? GREEN : AMBER, true);
+        p.addView(cur);
+        if (has) p.addView(tv(Printer.typeLabel(Printer.get(this, "type")) + " · " + Printer.get(this, "addr"), 13, DIM, false));
+
+        LinearLayout btns = hbox();
+        btns.addView(button(scanning ? "⏳  Szukanie…" : "🔍  Szukaj drukarek", ORANGE, 16, v -> { if (!scanning) scanClick(); }),
+                lp(0, dp(52), 1f, 0, 0, 4, 0));
+        btns.addView(button("🖨  Test wydruku", SURFACE2, 16, v -> {
+            if (!Printer.configured(this)) { Toast.makeText(this, "Najpierw wybierz drukarkę", Toast.LENGTH_SHORT).show(); return; }
+            Printer.print(this, Printer.testOrder(), r -> Toast.makeText(this,
+                    r != null ? "Wysłano do drukarki ✓" : "Błąd drukarki: " + Store.printError, Toast.LENGTH_LONG).show());
+        }), lp(0, dp(52), 1f, 4, 0, 0, 0));
+        p.addView(btns, lp(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT, 0f, 0, 12, 0, 0));
+
+        if (scanning) p.addView(tv("Szukam: Bluetooth · Wi-Fi/LAN · USB…", 13, DIM, false), lp(ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT, 0f, 0, 10, 0, 0));
+        if (scanned && !scanning && found.isEmpty())
+            p.addView(tv("Nie znaleziono drukarek. Sprawdź, czy drukarka jest włączona, a Bluetooth i Wi-Fi tabletu aktywne.", 14, AMBER, false), lp(ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT, 0f, 0, 10, 0, 0));
+
+        for (final PrinterScan.Found f : found) {
+            boolean sel = has && Printer.get(this, "type").equals(f.type) && Printer.get(this, "addr").equals(f.addr);
+            LinearLayout row = hbox();
+            row.setPadding(dp(12), dp(10), dp(12), dp(10));
+            row.setBackground(ripple(sel ? 0x3322C55E : SURFACE2, 12));
+            row.setClickable(true);
+            row.setOnClickListener(v -> choose(f));
+            row.addView(tv(f.type.equals("bt") ? "🔷" : f.type.equals("net") ? "📶" : "🔌", 22, TEXT, false), lp(ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT, 0f, 0, 0, 12, 0));
+            LinearLayout col = vbox();
+            col.addView(tv(f.name, 16, TEXT, true));
+            col.addView(tv(Printer.typeLabel(f.type) + " · " + f.extra, 12, DIM, false));
+            row.addView(col, lp(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f, 0, 0, 0, 0));
+            row.addView(tv(sel ? "✓" : "Wybierz", sel ? 20 : 14, sel ? GREEN : ORANGE, true));
+            p.addView(row, lp(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT, 0f, 0, 8, 0, 0));
+        }
+        box.addView(p);
+
+        // ---- receipt
+        box.addView(sectionTitle("Paragon"));
+        LinearLayout q = panel();
+        toggleRow(q, "Drukuj automatycznie nowe zamówienia", "auto");
+
+        LinearLayout paper = settingRow("Szerokość papieru");
+        for (final String w : new String[]{"80", "58"}) {
+            boolean on = Printer.get(this, "paper").equals(w);
+            TextView t = tv(w + " mm", 14, on ? Color.WHITE : DIM, true);
+            t.setGravity(Gravity.CENTER);
+            t.setBackground(shape(on ? ORANGE : SURFACE2, 20));
+            t.setPadding(dp(14), dp(7), dp(14), dp(7));
+            t.setClickable(true);
+            t.setOnClickListener(v -> { Printer.set(this, "paper", w); render(); });
+            paper.addView(t, lp(ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT, 0f, 4, 0, 0, 0));
+        }
+        q.addView(paper);
+
+        LinearLayout copies = settingRow("Liczba kopii");
+        int n = 1;
+        try { n = Integer.parseInt(Printer.get(this, "copies")); } catch (Exception e) { /* default */ }
+        final int cn = n;
+        TextView minus = button("−", SURFACE2, 20, v -> { Printer.set(this, "copies", String.valueOf(Math.max(1, cn - 1))); render(); });
+        TextView plus = button("+", SURFACE2, 20, v -> { Printer.set(this, "copies", String.valueOf(Math.min(5, cn + 1))); render(); });
+        TextView num = tv(String.valueOf(n), 18, TEXT, true);
+        num.setGravity(Gravity.CENTER);
+        copies.addView(minus, lp(dp(44), dp(40), 0f, 0, 0, 0, 0));
+        copies.addView(num, lp(dp(40), ViewGroup.LayoutParams.WRAP_CONTENT, 0f, 0, 0, 0, 0));
+        copies.addView(plus, lp(dp(44), dp(40), 0f, 0, 0, 0, 0));
+        q.addView(copies);
+
+        toggleRow(q, "Obetnij papier po wydruku", "cut");
+        toggleRow(q, "Pokaż ceny i sumę", "show_prices");
+        toggleRow(q, "Pokaż telefon klienta", "show_phone");
+        toggleRow(q, "Duży numer zamówienia", "big_number");
+        textRow(q, "Nagłówek", "header", "Nagłówek paragonu");
+        textRow(q, "Stopka", "footer", "Stopka paragonu");
+        box.addView(q);
+
+        TextView hint = tv("Drukarka Bluetooth musi być włączona (przy pierwszym użyciu pojawi się prośba o sparowanie). Drukarka sieciowa musi mieć port 9100 i być w tym samym Wi-Fi co tablet.", 12, DIM, false);
+        hint.setPadding(dp(6), dp(12), dp(6), 0);
+        box.addView(hint);
+        return box;
     }
 
     private void addDivider(LinearLayout parent) {

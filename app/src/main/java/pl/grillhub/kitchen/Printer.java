@@ -1,0 +1,397 @@
+package pl.grillhub.kitchen;
+
+import android.bluetooth.BluetoothAdapter;
+import android.bluetooth.BluetoothDevice;
+import android.bluetooth.BluetoothSocket;
+import android.content.Context;
+import android.content.SharedPreferences;
+import android.hardware.usb.UsbConstants;
+import android.hardware.usb.UsbDevice;
+import android.hardware.usb.UsbDeviceConnection;
+import android.hardware.usb.UsbEndpoint;
+import android.hardware.usb.UsbInterface;
+import android.hardware.usb.UsbManager;
+import android.os.Handler;
+import android.os.Looper;
+
+import org.json.JSONArray;
+import org.json.JSONObject;
+
+import java.io.ByteArrayOutputStream;
+import java.io.IOException;
+import java.io.OutputStream;
+import java.net.InetSocketAddress;
+import java.net.Socket;
+import java.text.SimpleDateFormat;
+import java.util.ArrayList;
+import java.util.HashMap;
+import java.util.HashSet;
+import java.util.List;
+import java.util.Locale;
+import java.util.Map;
+import java.util.Set;
+import java.util.UUID;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
+
+/**
+ * ESC/POS receipt printing: builds the receipt (same layout as the web kitchen page)
+ * and sends it over Bluetooth (SPP), the network (port 9100) or USB.
+ */
+final class Printer {
+
+    static final String SPP = "00001101-0000-1000-8000-00805F9B34FB";
+
+    private static final Handler main = new Handler(Looper.getMainLooper());
+    private static final ExecutorService queue = Executors.newSingleThreadExecutor();
+    private static final Set<Integer> inflight = new HashSet<>();
+    private static final Map<Integer, Integer> tries = new HashMap<>();
+    private static final Map<Integer, Long> lastTry = new HashMap<>();
+
+    private Printer() {}
+
+    // ------------------------------------------------------------ settings
+
+    private static SharedPreferences sp(Context c) {
+        return c.getApplicationContext().getSharedPreferences("printer", Context.MODE_PRIVATE);
+    }
+
+    static String get(Context c, String k) {
+        String def = "";
+        if (k.equals("paper")) def = "80";
+        else if (k.equals("copies")) def = "1";
+        else if (k.equals("header")) def = "Grill Hub";
+        else if (k.equals("footer")) def = "Grill Hub · Katowice";
+        return sp(c).getString(k, def);
+    }
+
+    static void set(Context c, String k, String v) { sp(c).edit().putString(k, v).apply(); tries.clear(); }
+
+    /** boolean options, all on by default */
+    static boolean on(Context c, String k) { return sp(c).getBoolean(k, true); }
+
+    static void setOn(Context c, String k, boolean v) { sp(c).edit().putBoolean(k, v).apply(); }
+
+    static boolean configured(Context c) { return !get(c, "type").isEmpty() && !get(c, "addr").isEmpty(); }
+
+    static String typeLabel(String t) {
+        return t.equals("bt") ? "Bluetooth" : t.equals("net") ? "Sieć (Wi-Fi/LAN)" : t.equals("usb") ? "USB" : "";
+    }
+
+    static void select(Context c, String type, String addr, String name) {
+        sp(c).edit().putString("type", type).putString("addr", addr).putString("name", name).apply();
+        tries.clear();
+    }
+
+    // ------------------------------------------------------------ receipt layout
+
+    private static final class Blk {
+        final String t; final char a; final boolean b; final int s;
+        Blk(String t, char a, boolean b, int s) { this.t = t; this.a = a; this.b = b; this.s = s; }
+    }
+
+    private static String ascii(String s) {
+        StringBuilder sb = new StringBuilder();
+        for (int i = 0; i < s.length(); i++) {
+            char ch = s.charAt(i);
+            if ((ch >= 0x20 && ch <= 0x7E) || ch == '\n') { sb.append(ch); continue; }
+            switch (ch) {
+                case 'ą': sb.append('a'); break; case 'ć': sb.append('c'); break; case 'ę': sb.append('e'); break;
+                case 'ł': sb.append('l'); break; case 'ń': sb.append('n'); break; case 'ó': sb.append('o'); break;
+                case 'ś': sb.append('s'); break; case 'ź': case 'ż': sb.append('z'); break;
+                case 'Ą': sb.append('A'); break; case 'Ć': sb.append('C'); break; case 'Ę': sb.append('E'); break;
+                case 'Ł': sb.append('L'); break; case 'Ń': sb.append('N'); break; case 'Ó': sb.append('O'); break;
+                case 'Ś': sb.append('S'); break; case 'Ź': case 'Ż': sb.append('Z'); break;
+                case '×': sb.append('x'); break; case '—': case '–': case '·': sb.append('-'); break;
+                case '↳': sb.append('>'); break; case '’': sb.append('\''); break;
+                case '„': case '”': sb.append('"'); break;
+                default: sb.append('?');
+            }
+        }
+        return sb.toString();
+    }
+
+    private static String rep(char c, int n) {
+        StringBuilder sb = new StringBuilder();
+        for (int i = 0; i < n; i++) sb.append(c);
+        return sb.toString();
+    }
+
+    private static List<String> wrap(String s, int w) {
+        List<String> out = new ArrayList<>();
+        String line = "";
+        for (String word : ascii(s).split(" ", -1)) {
+            while (word.length() > w) {
+                if (!line.isEmpty()) { out.add(line); line = ""; }
+                out.add(word.substring(0, w));
+                word = word.substring(w);
+            }
+            if ((line.isEmpty() ? 0 : line.length() + 1) + word.length() > w) { out.add(line); line = word; }
+            else line = line.isEmpty() ? word : line + " " + word;
+        }
+        if (!line.isEmpty()) out.add(line);
+        return out;
+    }
+
+    private static String two(String l, String r, int w) {
+        l = ascii(l); r = ascii(r);
+        int sp = w - l.length() - r.length();
+        return sp >= 1 ? l + rep(' ', sp) + r : l + "\n" + rep(' ', Math.max(0, w - r.length())) + r;
+    }
+
+    private static List<Blk> blocks(Context c, JSONObject o, int cols) {
+        List<Blk> B = new ArrayList<>();
+        String dash = rep('-', cols);
+        boolean prices = on(c, "show_prices"), big = on(c, "big_number");
+        String header = get(c, "header"), footer = get(c, "footer");
+
+        if (!header.isEmpty()) B.add(new Blk(header, 'c', true, 2));
+        B.add(new Blk(new SimpleDateFormat("dd.MM.yyyy HH:mm", Locale.getDefault()).format(new java.util.Date(o.optLong("ts") * 1000)), 'c', false, 1));
+        B.add(new Blk(dash, 'l', false, 1));
+        B.add(new Blk((big ? "ZAMOWIENIE #" : "Zamowienie #") + o.optInt("num"), 'c', true, big ? 2 : 1));
+        if ("dine".equals(o.optString("mode"))) {
+            B.add(new Blk("NA MIEJSCU" + (o.optString("table").isEmpty() ? "" : "  STOLIK " + o.optString("table")), 'c', true, 2));
+        } else {
+            B.add(new Blk("ODBIOR OSOBISTY", 'c', true, 2));
+            if (!o.optString("name").isEmpty()) B.add(new Blk("Imie: " + o.optString("name"), 'l', true, 1));
+            if (!o.optString("phone").isEmpty() && on(c, "show_phone")) B.add(new Blk("Tel: " + o.optString("phone"), 'l', false, 1));
+            if (!o.optString("eta").isEmpty()) B.add(new Blk("Godzina odbioru: " + o.optString("eta"), 'l', true, 1));
+        }
+        B.add(new Blk(dash, 'l', false, 1));
+
+        JSONArray lines = o.optJSONArray("lines");
+        if (lines != null) for (int i = 0; i < lines.length(); i++) {
+            JSONObject l = lines.optJSONObject(i);
+            if (l == null) continue;
+            int qty = l.optInt("qty");
+            String left = qty + " x " + l.optString("name");
+            String right = prices ? Store.money(l.optDouble("price") * qty) : "";
+            int room = cols - right.length() - 1;
+            if (!right.isEmpty()) {
+                B.add(new Blk(two(left.length() > room ? left.substring(0, room) : left, right, cols), 'l', true, 1));
+                if (left.length() > room) for (String x : wrap("  " + left.substring(room), cols)) B.add(new Blk(x, 'l', false, 1));
+            } else {
+                for (String x : wrap(left, cols)) B.add(new Blk(x, 'l', true, 1));
+            }
+            if (!l.optString("desc").isEmpty()) for (String x : wrap("  > " + l.optString("desc"), cols)) B.add(new Blk(x, 'l', false, 1));
+        }
+        B.add(new Blk(dash, 'l', false, 1));
+
+        if (prices) {
+            if (o.optDouble("deposit", 0) > 0) B.add(new Blk(two("Kaucja za napoje", "+" + Store.money(o.optDouble("deposit")), cols), 'l', false, 1));
+            if (o.optDouble("pack", 0) > 0) B.add(new Blk(two("Opakowanie na wynos", "+" + Store.money(o.optDouble("pack")), cols), 'l', false, 1));
+            if (o.optDouble("combo", 0) > 0) B.add(new Blk(two("Zestaw wrap+napoj", "-" + Store.money(o.optDouble("combo")), cols), 'l', false, 1));
+            if (o.optDouble("coupon", 0) > 0) B.add(new Blk(two("Kod " + o.optString("code"), "-" + Store.money(o.optDouble("coupon")), cols), 'l', false, 1));
+            B.add(new Blk(two("RAZEM:", Store.money(o.optDouble("total")) + " zl", cols / 2), 'r', true, 2));
+        }
+        if (!o.optString("notes").isEmpty()) {
+            B.add(new Blk("", 'l', false, 1));
+            B.add(new Blk("UWAGI:", 'l', true, 1));
+            for (String x : wrap(o.optString("notes"), cols)) B.add(new Blk(x, 'l', false, 1));
+        }
+        if (!footer.isEmpty()) {
+            B.add(new Blk("", 'l', false, 1));
+            B.add(new Blk(footer, 'c', false, 1));
+        }
+        return B;
+    }
+
+    static byte[] escpos(Context c, JSONObject o) {
+        int cols = get(c, "paper").equals("58") ? 32 : 48;
+        int copies = 1;
+        try { copies = Math.max(1, Math.min(5, Integer.parseInt(get(c, "copies")))); } catch (Exception e) { /* default */ }
+        ByteArrayOutputStream b = new ByteArrayOutputStream();
+        for (int n = 0; n < copies; n++) {
+            b.write(0x1B); b.write(0x40);                                   // init
+            for (Blk x : blocks(c, o, cols)) {
+                b.write(0x1B); b.write(0x61); b.write(x.a == 'c' ? 1 : x.a == 'r' ? 2 : 0);   // align
+                b.write(0x1B); b.write(0x45); b.write(x.b ? 1 : 0);                           // bold
+                b.write(0x1D); b.write(0x21); b.write(x.s == 2 ? 0x11 : 0);                   // size
+                int w = x.s == 2 ? cols / 2 : cols;
+                String t = ascii(x.t);
+                if (x.s == 2 && t.length() > w && t.indexOf('\n') < 0) {
+                    for (String ln : wrap(t, w)) { write(b, ln); b.write(0x0A); }
+                    continue;
+                }
+                write(b, t);
+                b.write(0x0A);
+            }
+            b.write(0x1B); b.write(0x45); b.write(0);
+            b.write(0x1D); b.write(0x21); b.write(0);
+            b.write(0x1B); b.write(0x61); b.write(0);
+            for (int i = 0; i < 4; i++) b.write(0x0A);
+            if (on(c, "cut")) { b.write(0x1D); b.write(0x56); b.write(0x42); b.write(0x00); }
+        }
+        return b.toByteArray();
+    }
+
+    private static void write(ByteArrayOutputStream b, String s) {
+        for (int i = 0; i < s.length(); i++) b.write(s.charAt(i) & 0xFF);
+    }
+
+    static JSONObject testOrder() {
+        try {
+            JSONObject o = new JSONObject();
+            o.put("num", 0);
+            o.put("ts", System.currentTimeMillis() / 1000);
+            o.put("mode", "dine");
+            o.put("table", "TEST");
+            JSONArray lines = new JSONArray();
+            lines.put(new JSONObject().put("name", "Test wydruku ąęśćżźół").put("qty", 1).put("price", 10).put("desc", ""));
+            o.put("lines", lines);
+            o.put("total", 10);
+            o.put("notes", "Test");
+            return o;
+        } catch (Exception e) {
+            return new JSONObject();
+        }
+    }
+
+    // ------------------------------------------------------------ queue
+
+    /** Prints one order in the background. cb gets "ok" or null (error text in Store.printError). */
+    static void print(Context ctx, JSONObject order, final Store.Result cb) {
+        final Context c = ctx.getApplicationContext();
+        final String json = order.toString();
+        queue.execute(() -> {
+            String err = null;
+            try {
+                send(c, escpos(c, new JSONObject(json)));
+            } catch (Exception e) {
+                err = e.getMessage() != null && !e.getMessage().isEmpty() ? e.getMessage() : e.getClass().getSimpleName();
+            }
+            final String er = err;
+            main.post(() -> {
+                Store.setPrintError(er);
+                if (cb != null) cb.done(er == null ? "ok" : null);
+            });
+        });
+    }
+
+    static void printManual(Context ctx, JSONObject order, Store.Result cb) {
+        tries.remove(order.optInt("id"));
+        final int id = order.optInt("id");
+        print(ctx, order, r -> {
+            if (r != null && id > 0) Store.markPrinted(id);
+            if (cb != null) cb.done(r);
+        });
+    }
+
+    /** Called regularly by the service: prints new orders that have not been printed yet. */
+    static void autoPrint(Context ctx) {
+        if (!configured(ctx) || !on(ctx, "auto")) return;
+        long now = System.currentTimeMillis();
+        for (JSONObject o : Store.unprinted()) {
+            final int id = o.optInt("id");
+            if (inflight.contains(id)) continue;
+            int n = tries.containsKey(id) ? tries.get(id) : 0;
+            if (n >= 6) continue;
+            Long last = lastTry.get(id);
+            if (last != null && now - last < 15000) continue;
+            inflight.add(id);
+            tries.put(id, n + 1);
+            lastTry.put(id, now);
+            print(ctx, o, r -> {
+                inflight.remove(id);
+                if (r != null) Store.markPrinted(id);
+            });
+        }
+    }
+
+    // ------------------------------------------------------------ transports
+
+    static String usbKey(UsbDevice d) { return d.getVendorId() + ":" + d.getProductId(); }
+
+    private static void send(Context c, byte[] data) throws Exception {
+        String type = get(c, "type"), addr = get(c, "addr");
+        if (type.equals("bt")) sendBt(addr, data);
+        else if (type.equals("net")) sendNet(addr, data);
+        else if (type.equals("usb")) sendUsb(c, addr, data);
+        else throw new IOException("Nie wybrano drukarki");
+    }
+
+    private static void chunked(OutputStream os, byte[] data, int size, int pauseMs) throws Exception {
+        for (int i = 0; i < data.length; i += size) {
+            os.write(data, i, Math.min(size, data.length - i));
+            os.flush();
+            if (pauseMs > 0) Thread.sleep(pauseMs);
+        }
+    }
+
+    @SuppressWarnings("deprecation")
+    private static void sendBt(String mac, byte[] data) throws Exception {
+        BluetoothAdapter ad = BluetoothAdapter.getDefaultAdapter();
+        if (ad == null) throw new IOException("To urządzenie nie ma Bluetooth");
+        if (!ad.isEnabled()) throw new IOException("Bluetooth jest wyłączony");
+        try { ad.cancelDiscovery(); } catch (SecurityException e) { throw new IOException("Brak zgody na Bluetooth"); }
+        BluetoothDevice d = ad.getRemoteDevice(mac);
+        BluetoothSocket s = null;
+        try {
+            try {
+                s = d.createRfcommSocketToServiceRecord(UUID.fromString(SPP));
+                s.connect();
+            } catch (IOException first) {
+                try { if (s != null) s.close(); } catch (Exception ignore) { /* ignore */ }
+                s = (BluetoothSocket) d.getClass().getMethod("createRfcommSocket", int.class).invoke(d, 1);
+                s.connect();
+            }
+            OutputStream os = s.getOutputStream();
+            chunked(os, data, 512, 40);
+            Thread.sleep(900);   // let the printer finish before the link is closed
+        } catch (SecurityException e) {
+            throw new IOException("Brak zgody na Bluetooth");
+        } catch (IOException e) {
+            throw new IOException("Nie można połączyć z drukarką Bluetooth (włączona? sparowana?)");
+        } finally {
+            try { if (s != null) s.close(); } catch (Exception ignore) { /* ignore */ }
+        }
+    }
+
+    private static void sendNet(String ip, byte[] data) throws Exception {
+        Socket s = new Socket();
+        try {
+            s.connect(new InetSocketAddress(ip, 9100), 4000);
+            s.setSoTimeout(5000);
+            chunked(s.getOutputStream(), data, 1024, 10);
+            Thread.sleep(400);
+        } catch (IOException e) {
+            throw new IOException("Nie można połączyć z drukarką " + ip);
+        } finally {
+            try { s.close(); } catch (Exception ignore) { /* ignore */ }
+        }
+    }
+
+    private static void sendUsb(Context c, String key, byte[] data) throws Exception {
+        UsbManager um = (UsbManager) c.getSystemService(Context.USB_SERVICE);
+        UsbDevice dev = null;
+        for (UsbDevice d : um.getDeviceList().values()) if (usbKey(d).equals(key)) dev = d;
+        if (dev == null) throw new IOException("Drukarka USB nie jest podłączona");
+        if (!um.hasPermission(dev)) throw new IOException("Brak zgody USB — wybierz drukarkę ponownie w Ustawieniach");
+        UsbInterface intf = null;
+        UsbEndpoint out = null;
+        for (int i = 0; i < dev.getInterfaceCount() && out == null; i++) {
+            UsbInterface it = dev.getInterface(i);
+            for (int j = 0; j < it.getEndpointCount(); j++) {
+                UsbEndpoint ep = it.getEndpoint(j);
+                if (ep.getType() == UsbConstants.USB_ENDPOINT_XFER_BULK && ep.getDirection() == UsbConstants.USB_DIR_OUT) {
+                    intf = it; out = ep; break;
+                }
+            }
+        }
+        if (out == null) throw new IOException("Nie znaleziono wyjścia USB drukarki");
+        UsbDeviceConnection conn = um.openDevice(dev);
+        if (conn == null) throw new IOException("Nie można otworzyć drukarki USB");
+        try {
+            conn.claimInterface(intf, true);
+            for (int off = 0; off < data.length; off += 4096) {
+                int len = Math.min(4096, data.length - off);
+                byte[] part = new byte[len];
+                System.arraycopy(data, off, part, 0, len);
+                if (conn.bulkTransfer(out, part, len, 5000) < 0) throw new IOException("Błąd wysyłania do drukarki USB");
+            }
+            conn.releaseInterface(intf);
+        } finally {
+            conn.close();
+        }
+    }
+}
