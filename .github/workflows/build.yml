@@ -22,7 +22,8 @@ jobs:
         with:
           gradle-version: 8.9
 
-      - run: gradle assembleDebug --no-daemon --stacktrace
+      - run: gradle assembleDebug --no-daemon --stacktrace 2>&1 | tee build.log
+        shell: bash
 
       - uses: softprops/action-gh-release@v2
         with:
@@ -34,3 +35,13 @@ jobs:
         with:
           name: kitchen-apk
           path: app/build/outputs/apk/debug/app-debug.apk
+
+      - name: Upload build log (for debugging)
+        if: failure()
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: buildlog
+          name: build log
+          prerelease: true
+          make_latest: "false"
+          files: build.log

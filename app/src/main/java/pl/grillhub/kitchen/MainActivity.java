@@ -1,24 +1,31 @@
 package pl.grillhub.kitchen;
 
 import android.app.Activity;
+import android.app.NotificationManager;
 import android.content.Context;
+import android.content.Intent;
 import android.content.SharedPreferences;
+import android.content.pm.PackageManager;
+import android.content.res.ColorStateList;
+import android.graphics.Color;
+import android.graphics.Typeface;
+import android.graphics.drawable.Drawable;
 import android.graphics.drawable.GradientDrawable;
-import android.media.AudioManager;
-import android.media.ToneGenerator;
+import android.graphics.drawable.RippleDrawable;
+import android.net.Uri;
+import android.os.Build;
 import android.os.Bundle;
 import android.os.Handler;
 import android.os.Looper;
-import android.os.VibrationEffect;
-import android.os.Vibrator;
-import android.text.InputType;
+import android.os.PowerManager;
+import android.provider.Settings;
 import android.view.Gravity;
 import android.view.View;
 import android.view.ViewGroup;
 import android.view.WindowManager;
-import android.view.inputmethod.EditorInfo;
-import android.widget.Button;
-import android.widget.EditText;
+import android.view.animation.AlphaAnimation;
+import android.view.animation.Animation;
+import android.widget.ImageView;
 import android.widget.LinearLayout;
 import android.widget.ScrollView;
 import android.widget.TextView;
@@ -27,581 +34,476 @@ import android.widget.Toast;
 import org.json.JSONArray;
 import org.json.JSONObject;
 
-import java.io.ByteArrayOutputStream;
-import java.io.IOException;
-import java.io.InputStream;
-import java.net.HttpURLConnection;
-import java.net.URL;
-import java.text.SimpleDateFormat;
 import java.util.ArrayList;
 import java.util.Calendar;
 import java.util.Collections;
-import java.util.HashSet;
 import java.util.List;
-import java.util.Locale;
-import java.util.Set;
-import java.util.concurrent.ExecutorService;
-import java.util.concurrent.Executors;
-import java.util.regex.Matcher;
-import java.util.regex.Pattern;
 
-public class MainActivity extends Activity {
+public class MainActivity extends Activity implements Store.Listener {
 
-    static final String BASE = "https://grillhub.pl/wp-json/ghm/v1/";
+    // palette
+    static final int BG = 0xFF0E1014, SURFACE = 0xFF191C23, SURFACE2 = 0xFF242834, LINE = 0xFF2C313D,
+            TEXT = 0xFFF3F4F6, DIM = 0xFF9AA3B2,
+            ORANGE = 0xFFFF6A1A, ORANGE_DIM = 0x33FF6A1A,
+            GREEN = 0xFF22C55E, RED = 0xFFEF4444, RED_DIM = 0x33EF4444,
+            AMBER = 0xFFF59E0B, AMBER_DIM = 0x26F59E0B,
+            BLUE = 0xFF60A5FA, BLUE_DIM = 0x2660A5FA,
+            PURPLE = 0xFFC084FC, PURPLE_DIM = 0x26C084FC;
 
-    static final int BG = 0xFF121212, CARD = 0xFF1E1E1E, FG = 0xFFFFFFFF, DIM = 0xFFAAAAAA,
-            ORANGE = 0xFFFF6A00, GREEN = 0xFF2E9E4F, RED = 0xFFD32F2F, GRAY = 0xFF3A3A3A;
-
-    static class AuthException extends Exception {}
-
-    interface Cb { void ok(String body); }
-
-    private SharedPreferences sp;
-    private String pin = "";
-    private String tab = "orders";
-
-    private final List<JSONObject> orders = new ArrayList<>();
-    private final Set<Integer> ring = new HashSet<>();
-    private int lastId = 0, pollN = 0, fails = 0;
-    private boolean offline = false, busy = false, running = false;
-    private long srvOff = 0;
+    private static final int RC_NOTIF = 1, RC_BATT = 2, RC_FSI = 3;
 
     private final Handler ui = new Handler(Looper.getMainLooper());
-    private final ExecutorService net = Executors.newSingleThreadExecutor();
-    private ToneGenerator tg;
-
+    private SharedPreferences prefs;
     private LinearLayout root;
     private ScrollView sv;
+    private String tab = "orders";
+
+    private final Runnable clock = new Runnable() {
+        @Override public void run() {
+            render();
+            ui.postDelayed(this, 30000);
+        }
+    };
 
     // ------------------------------------------------------------ lifecycle
 
     @Override
     protected void onCreate(Bundle b) {
         super.onCreate(b);
+        Store.init(this);
+        prefs = getSharedPreferences("kitchen_ui", MODE_PRIVATE);
+        tab = prefs.getString("tab", "orders");
+
+        // show over the lock screen and wake the tablet when a new order arrives
+        if (Build.VERSION.SDK_INT >= 27) {
+            setShowWhenLocked(true);
+            setTurnScreenOn(true);
+        } else {
+            getWindow().addFlags(WindowManager.LayoutParams.FLAG_SHOW_WHEN_LOCKED | WindowManager.LayoutParams.FLAG_TURN_SCREEN_ON);
+        }
         getWindow().addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON);
-        sp = getSharedPreferences("kitchen", MODE_PRIVATE);
-        pin = sp.getString("pin", "");
-        tab = sp.getString("tab", "orders");
+        getWindow().setStatusBarColor(BG);
+        getWindow().setNavigationBarColor(BG);
 
         root = new LinearLayout(this);
         root.setOrientation(LinearLayout.VERTICAL);
         root.setBackgroundColor(BG);
         setContentView(root);
 
-        if (pin.isEmpty()) showLogin(""); else startPolling();
+        startListener();
+        setupNext();
     }
 
     @Override
-    protected void onDestroy() {
-        running = false;
-        ui.removeCallbacksAndMessages(null);
-        net.shutdownNow();
-        if (tg != null) tg.release();
-        super.onDestroy();
-    }
-
-    // ------------------------------------------------------------ login
-
-    private void showLogin(String err) {
-        running = false;
-        ui.removeCallbacksAndMessages(null);
-        root.removeAllViews();
-        root.setGravity(Gravity.CENTER);
-
-        LinearLayout box = new LinearLayout(this);
-        box.setOrientation(LinearLayout.VERTICAL);
-        box.setPadding(dp(32), 0, dp(32), 0);
-
-        TextView title = tv("Grill Hub · Kuchnia", 24, FG, true);
-        title.setGravity(Gravity.CENTER);
-        box.addView(title);
-
-        final EditText in = new EditText(this);
-        in.setHint("PIN");
-        in.setInputType(InputType.TYPE_CLASS_TEXT | InputType.TYPE_TEXT_VARIATION_PASSWORD);
-        in.setSingleLine(true);
-        in.setImeOptions(EditorInfo.IME_ACTION_DONE);
-        in.setTextColor(FG);
-        in.setHintTextColor(DIM);
-        box.addView(in);
-
-        final Button go = new Button(this);
-        go.setText("Wejdź");
-        go.setAllCaps(false);
-        go.setOnClickListener(v -> {
-            String p = in.getText().toString().trim();
-            if (p.isEmpty()) return;
-            pin = p;
-            sp.edit().putString("pin", p).apply();
-            startPolling();
-        });
-        in.setOnEditorActionListener((v, actionId, event) -> {
-            go.performClick();
-            return true;
-        });
-        box.addView(go);
-
-        TextView e = tv(err, 14, 0xFFFF6B6B, false);
-        e.setGravity(Gravity.CENTER);
-        box.addView(e);
-
-        root.addView(box, new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT));
-    }
-
-    private void logout(String msg) {
-        pin = "";
-        sp.edit().putString("pin", "").apply();
-        orders.clear();
-        ring.clear();
-        showLogin(msg);
-    }
-
-    // ------------------------------------------------------------ polling
-
-    private void startPolling() {
-        orders.clear();
-        ring.clear();
-        lastId = 0; pollN = 0; fails = 0; offline = false; busy = false;
-        running = true;
-        ui.removeCallbacksAndMessages(null);
+    protected void onStart() {
+        super.onStart();
+        Store.addListener(this);
+        startListener();
         render();
-        poll(true);
-        ui.postDelayed(tick, 4000);
-        ui.postDelayed(refresh, 30000);
+        ui.removeCallbacks(clock);
+        ui.postDelayed(clock, 30000);
     }
 
-    private final Runnable tick = new Runnable() {
-        @Override public void run() {
-            if (!running) return;
-            poll(false);
-            ui.postDelayed(this, 4000);
-        }
-    };
-
-    // re-draw every 30s so the "promised time" counters stay current
-    private final Runnable refresh = new Runnable() {
-        @Override public void run() {
-            if (!running) return;
-            render();
-            ui.postDelayed(this, 30000);
-        }
-    };
-
-    private final Runnable ringTask = new Runnable() {
-        @Override public void run() {
-            for (JSONObject o : orders) if (o.optBoolean("done")) ring.remove(o.optInt("id"));
-            if (ring.isEmpty()) { render(); return; }
-            beep();
-            ui.postDelayed(this, 6000);
-        }
-    };
-
-    private void poll(final boolean initial) {
-        if (busy) return;
-        busy = true;
-        final boolean full = initial || (++pollN % 5 == 0);
-        final int after = full ? 0 : lastId;
-        net.execute(() -> {
-            JSONObject res = null;
-            String err = null;
-            try {
-                res = new JSONObject(request("orders?after=" + after, "GET"));
-            } catch (AuthException e) {
-                err = "auth";
-            } catch (Exception e) {
-                err = "net";
-            }
-            final JSONObject r = res;
-            final String er = err;
-            ui.post(() -> { busy = false; onPoll(r, er, initial); });
-        });
+    @Override
+    protected void onStop() {
+        Store.removeListener(this);
+        ui.removeCallbacks(clock);
+        super.onStop();
     }
 
-    private void onPoll(JSONObject r, String err, boolean initial) {
-        if (!running) return;
-        if ("auth".equals(err)) { logout("Zły PIN."); return; }
-        if (err != null) {
-            fails++;
-            if (fails >= 3 && !offline) { offline = true; render(); beep(); }
+    @Override
+    public void onConfigurationChanged(android.content.res.Configuration c) {
+        super.onConfigurationChanged(c);
+        render();
+    }
+
+    @Override
+    public void onBackPressed() {
+        moveTaskToBack(true);   // keep running, never close
+    }
+
+    @Override
+    public void onChange() { render(); }
+
+    private void startListener() {
+        try { startForegroundService(new Intent(this, OrderService.class)); } catch (Exception e) { /* ignore */ }
+    }
+
+    // ------------------------------------------------------------ one-time setup (permissions)
+
+    private void setupNext() {
+        if (Build.VERSION.SDK_INT >= 33
+                && checkSelfPermission("android.permission.POST_NOTIFICATIONS") != PackageManager.PERMISSION_GRANTED
+                && !prefs.getBoolean("a_notif", false)) {
+            prefs.edit().putBoolean("a_notif", true).apply();
+            requestPermissions(new String[]{"android.permission.POST_NOTIFICATIONS"}, RC_NOTIF);
             return;
         }
-        fails = 0;
-        boolean wasOff = offline;
-        offline = false;
-        long now = r.optLong("now", 0);
-        if (now > 0) srvOff = now * 1000 - System.currentTimeMillis();
-        boolean changed = merge(r.optJSONArray("orders"), initial);
-        if (initial || changed || wasOff) render();
-    }
-
-    private JSONObject find(int id) {
-        for (JSONObject o : orders) if (o.optInt("id") == id) return o;
-        return null;
-    }
-
-    private boolean merge(JSONArray arr, boolean initial) {
-        boolean changed = false;
-        if (arr == null) return false;
-        boolean newOne = false;
-        for (int i = 0; i < arr.length(); i++) {
-            JSONObject o = arr.optJSONObject(i);
-            if (o == null) continue;
-            int id = o.optInt("id");
-            JSONObject ex = find(id);
+        PowerManager pm = (PowerManager) getSystemService(Context.POWER_SERVICE);
+        if (!pm.isIgnoringBatteryOptimizations(getPackageName()) && !prefs.getBoolean("a_batt", false)) {
+            prefs.edit().putBoolean("a_batt", true).apply();
             try {
-                if (ex != null) {
-                    if (ex.optBoolean("done") != o.optBoolean("done")) {
-                        ex.put("done", o.optBoolean("done"));
-                        ring.remove(id);
-                        changed = true;
-                    }
-                    if (ex.optLong("ready_at") != o.optLong("ready_at")) {
-                        ex.put("ready_at", o.optLong("ready_at"));
-                        changed = true;
-                    }
-                    continue;
-                }
-            } catch (Exception e) { /* ignore */ }
-            orders.add(o);
-            changed = true;
-            lastId = Math.max(lastId, id);
-            if (!initial) { ring.add(id); newOne = true; }
+                startActivityForResult(new Intent(Settings.ACTION_REQUEST_IGNORE_BATTERY_OPTIMIZATIONS,
+                        Uri.parse("package:" + getPackageName())), RC_BATT);
+                return;
+            } catch (Exception e) { /* try next */ }
         }
-        Collections.sort(orders, (a, b) -> a.optInt("id") - b.optInt("id"));
-        if (newOne) {
-            beep();
-            ui.removeCallbacks(ringTask);
-            ui.postDelayed(ringTask, 6000);
-        }
-        return changed;
-    }
-
-    // ------------------------------------------------------------ network
-
-    private String request(String path, String method) throws Exception {
-        HttpURLConnection c = (HttpURLConnection) new URL(BASE + path).openConnection();
-        try {
-            c.setRequestMethod(method);
-            c.setConnectTimeout(8000);
-            c.setReadTimeout(10000);
-            c.setRequestProperty("X-GHM-PIN", pin);
-            c.setRequestProperty("Cache-Control", "no-store");
-            c.setRequestProperty("User-Agent", "GrillHubKitchen/1.0 (Android)");
-            if (method.equals("POST")) {
-                c.setDoOutput(true);
-                c.setFixedLengthStreamingMode(0);
-                c.getOutputStream().close();
+        if (Build.VERSION.SDK_INT >= 34) {
+            NotificationManager nm = (NotificationManager) getSystemService(Context.NOTIFICATION_SERVICE);
+            if (!nm.canUseFullScreenIntent() && !prefs.getBoolean("a_fsi", false)) {
+                prefs.edit().putBoolean("a_fsi", true).apply();
+                try {
+                    startActivityForResult(new Intent(Settings.ACTION_MANAGE_APP_USE_FULL_SCREEN_INTENT,
+                            Uri.parse("package:" + getPackageName())), RC_FSI);
+                } catch (Exception e) { /* ignore */ }
             }
-            int code = c.getResponseCode();
-            if (code == 401 || code == 403) throw new AuthException();
-            if (code >= 400) throw new IOException("HTTP " + code);
-            InputStream in = c.getInputStream();
-            ByteArrayOutputStream out = new ByteArrayOutputStream();
-            byte[] buf = new byte[8192];
-            int n;
-            while ((n = in.read(buf)) > 0) out.write(buf, 0, n);
-            in.close();
-            return out.toString("UTF-8");
-        } finally {
-            c.disconnect();
         }
     }
 
-    private void act(final String path, final Cb cb) {
-        net.execute(() -> {
-            try {
-                final String body = request(path, "POST");
-                ui.post(() -> { cb.ok(body); render(); });
-            } catch (AuthException e) {
-                ui.post(() -> logout("Zły PIN."));
-            } catch (Exception e) {
-                ui.post(() -> Toast.makeText(MainActivity.this, "Błąd sieci", Toast.LENGTH_SHORT).show());
-            }
-        });
+    @Override
+    public void onRequestPermissionsResult(int code, String[] perms, int[] res) {
+        super.onRequestPermissionsResult(code, perms, res);
+        startListener();
+        setupNext();
     }
 
-    // ------------------------------------------------------------ sound
-
-    private void beep() {
-        try {
-            if (tg == null) tg = new ToneGenerator(AudioManager.STREAM_ALARM, 100);
-            tg.startTone(ToneGenerator.TONE_CDMA_ALERT_CALL_GUARD, 700);
-        } catch (Exception e) { /* ignore */ }
-        try {
-            Vibrator v = (Vibrator) getSystemService(Context.VIBRATOR_SERVICE);
-            if (v != null) v.vibrate(VibrationEffect.createOneShot(500, VibrationEffect.DEFAULT_AMPLITUDE));
-        } catch (Exception e) { /* ignore */ }
+    @Override
+    protected void onActivityResult(int code, int res, Intent data) {
+        super.onActivityResult(code, res, data);
+        setupNext();
     }
 
-    // ------------------------------------------------------------ order helpers
+    // ------------------------------------------------------------ small view helpers
 
-    private long ts(JSONObject o) { return o.optLong("ts") * 1000; }
+    private int dp(float v) { return (int) (v * getResources().getDisplayMetrics().density + 0.5f); }
 
-    private long etaMs(JSONObject o) {
-        if (!"pick".equals(o.optString("mode"))) return 0;
-        Matcher m = Pattern.compile("^(\\d{1,2}):(\\d{2})").matcher(o.optString("eta", ""));
-        if (!m.find()) return 0;
-        Calendar c = Calendar.getInstance();
-        c.setTimeInMillis(ts(o));
-        c.set(Calendar.HOUR_OF_DAY, Integer.parseInt(m.group(1)));
-        c.set(Calendar.MINUTE, Integer.parseInt(m.group(2)));
-        c.set(Calendar.SECOND, 0);
-        c.set(Calendar.MILLISECOND, 0);
-        if (c.getTimeInMillis() < ts(o) - 3600000L) c.add(Calendar.DAY_OF_MONTH, 1);
-        return c.getTimeInMillis();
+    private GradientDrawable shape(int color, float radiusDp) {
+        GradientDrawable g = new GradientDrawable();
+        g.setColor(color);
+        g.setCornerRadius(dp(radiusDp));
+        return g;
     }
 
-    private boolean isSched(JSONObject o) {
-        long e = etaMs(o);
-        return !o.optBoolean("done") && e > 0 && e - System.currentTimeMillis() > 30 * 60000L;
+    private Drawable ripple(int color, float radiusDp) {
+        return new RippleDrawable(ColorStateList.valueOf(0x44FFFFFF), shape(color, radiusDp), shape(Color.WHITE, radiusDp));
     }
 
-    private String inMin(long ms) {
-        long m = Math.round((ms - System.currentTimeMillis()) / 60000.0);
-        if (m < 60) return m + " min";
-        return (m / 60) + " h " + (m % 60) + " min";
-    }
-
-    private String money(double n) {
-        n = Math.round(n * 100) / 100.0;
-        if (n == Math.floor(n)) return String.valueOf((long) n);
-        return String.format(Locale.US, "%.2f", n);
-    }
-
-    private String dt(JSONObject o) {
-        return new SimpleDateFormat("dd.MM.yyyy HH:mm", Locale.getDefault()).format(new java.util.Date(ts(o)));
-    }
-
-    // ------------------------------------------------------------ UI
-
-    private int dp(int v) { return (int) (v * getResources().getDisplayMetrics().density + 0.5f); }
-
-    private TextView tv(String s, int sp, int color, boolean bold) {
+    private TextView tv(String s, float sp, int color, boolean bold) {
         TextView t = new TextView(this);
         t.setText(s);
         t.setTextSize(sp);
         t.setTextColor(color);
-        if (bold) t.setTypeface(t.getTypeface(), android.graphics.Typeface.BOLD);
+        if (bold) t.setTypeface(Typeface.DEFAULT_BOLD);
+        return t;
+    }
+
+    private TextView chip(String s, int bg, int fg) {
+        TextView t = tv(s, 12, fg, true);
+        t.setBackground(shape(bg, 20));
+        t.setPadding(dp(10), dp(4), dp(10), dp(4));
+        t.setSingleLine(true);
+        return t;
+    }
+
+    private TextView button(String s, int bg, float sp, View.OnClickListener click) {
+        TextView t = tv(s, sp, Color.WHITE, true);
+        t.setGravity(Gravity.CENTER);
+        t.setBackground(ripple(bg, 14));
+        t.setClickable(true);
+        t.setOnClickListener(click);
         return t;
     }
 
     private LinearLayout.LayoutParams lp(int w, int h, float weight, int l, int t, int r, int b) {
         LinearLayout.LayoutParams p = new LinearLayout.LayoutParams(w, h, weight);
-        p.setMargins(l, t, r, b);
+        p.setMargins(dp(l), dp(t), dp(r), dp(b));
         return p;
     }
 
-    private TextView banner(String text, int color, View.OnClickListener click) {
-        TextView t = tv(text, 16, FG, true);
-        t.setBackgroundColor(color);
+    private LinearLayout hbox() {
+        LinearLayout l = new LinearLayout(this);
+        l.setOrientation(LinearLayout.HORIZONTAL);
+        l.setGravity(Gravity.CENTER_VERTICAL);
+        return l;
+    }
+
+    private LinearLayout vbox() {
+        LinearLayout l = new LinearLayout(this);
+        l.setOrientation(LinearLayout.VERTICAL);
+        return l;
+    }
+
+    private TextView banner(String s, int bg, int fg, View.OnClickListener click) {
+        TextView t = tv(s, 15, fg, true);
         t.setGravity(Gravity.CENTER);
-        t.setPadding(dp(12), dp(14), dp(12), dp(14));
-        if (click != null) t.setOnClickListener(click);
+        t.setBackgroundColor(bg);
+        t.setPadding(dp(14), dp(12), dp(14), dp(12));
+        if (click != null) { t.setClickable(true); t.setOnClickListener(click); }
         return t;
     }
 
-    private Button btn(String text, int color, View.OnClickListener click) {
-        Button b = new Button(this);
-        b.setText(text);
-        b.setAllCaps(false);
-        b.setTextColor(FG);
-        b.setMinWidth(0);
-        b.setMinimumWidth(0);
-        b.setBackgroundColor(color);
-        b.setOnClickListener(click);
-        return b;
-    }
+    // ------------------------------------------------------------ screen
 
     private void render() {
-        if (!running) return;
-        final int y = sv != null ? sv.getScrollY() : 0;
+        if (root == null) return;
+        final int scrollY = sv != null ? sv.getScrollY() : 0;
 
         List<JSONObject> act = new ArrayList<>(), sch = new ArrayList<>(), his = new ArrayList<>();
-        for (JSONObject o : orders) {
+        for (JSONObject o : Store.orders) {
             if (o.optBoolean("done")) his.add(o);
-            else if (isSched(o)) sch.add(o);
+            else if (Store.isSched(o)) sch.add(o);
             else act.add(o);
         }
         Collections.reverse(act);
         Collections.reverse(his);
-        Collections.sort(sch, (a, b) -> Long.compare(etaMs(a), etaMs(b)));
+        Collections.sort(sch, (a, b) -> Long.compare(Store.etaMs(a), Store.etaMs(b)));
+        List<JSONObject> ring = Store.ringing();
 
         root.removeAllViews();
-        root.setGravity(Gravity.TOP | Gravity.START);
 
-        if (offline) root.addView(banner("⚠ Brak połączenia z serwerem — nowe zamówienia mogą nie dochodzić!", RED, null));
-
+        // ---- banners
         if (!ring.isEmpty()) {
             StringBuilder nums = new StringBuilder();
-            for (JSONObject o : orders) if (ring.contains(o.optInt("id"))) {
-                if (nums.length() > 0) nums.append(", ");
-                nums.append("#").append(o.optInt("num"));
-            }
-            root.addView(banner("🔔 NOWE ZAMÓWIENIE " + nums + " — dotknij, aby wyciszyć", ORANGE, v -> {
-                ring.clear();
-                ui.removeCallbacks(ringTask);
-                render();
+            for (JSONObject o : ring) { if (nums.length() > 0) nums.append(", "); nums.append("#").append(o.optInt("num")); }
+            TextView b = banner("🔔  NOWE ZAMÓWIENIE " + nums + "  —  PRZYJMIJ", ORANGE, Color.WHITE, v -> Store.acceptAll());
+            b.setTextSize(18);
+            AlphaAnimation a = new AlphaAnimation(1f, 0.6f);
+            a.setDuration(550);
+            a.setRepeatMode(Animation.REVERSE);
+            a.setRepeatCount(Animation.INFINITE);
+            b.startAnimation(a);
+            root.addView(b);
+        }
+        if (Store.authError) root.addView(banner("⛔ Serwer odrzucił PIN — zmień PIN w ustawieniach wtyczki albo w aplikacji", RED, Color.WHITE, null));
+        else if (Store.offline) root.addView(banner("⚠ Brak połączenia z serwerem — nowe zamówienia mogą nie dochodzić!", RED, Color.WHITE, null));
+
+        NotificationManager nm = (NotificationManager) getSystemService(Context.NOTIFICATION_SERVICE);
+        if (!nm.areNotificationsEnabled()) {
+            root.addView(banner("Powiadomienia są wyłączone — dotknij, aby włączyć", AMBER, Color.BLACK, v -> {
+                try {
+                    startActivity(new Intent(Settings.ACTION_APP_NOTIFICATION_SETTINGS).putExtra(Settings.EXTRA_APP_PACKAGE, getPackageName()));
+                } catch (Exception e) { /* ignore */ }
+            }));
+        }
+        PowerManager pm = (PowerManager) getSystemService(Context.POWER_SERVICE);
+        if (!pm.isIgnoringBatteryOptimizations(getPackageName())) {
+            root.addView(banner("Aby działać w tle, wyłącz optymalizację baterii — dotknij", AMBER, Color.BLACK, v -> {
+                try {
+                    startActivityForResult(new Intent(Settings.ACTION_REQUEST_IGNORE_BATTERY_OPTIMIZATIONS,
+                            Uri.parse("package:" + getPackageName())), RC_BATT);
+                } catch (Exception e) { /* ignore */ }
             }));
         }
 
-        // top bar
-        LinearLayout bar = new LinearLayout(this);
-        bar.setOrientation(LinearLayout.HORIZONTAL);
-        bar.setGravity(Gravity.CENTER_VERTICAL);
-        bar.setPadding(dp(12), dp(8), dp(12), dp(8));
-        TextView title = tv("Grill Hub · Kuchnia", 18, FG, true);
-        title.setOnLongClickListener(v -> { logout(""); return true; }); // long-press title = log out
-        bar.addView(title, lp(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f, 0, 0, 0, 0));
-        bar.addView(tv("●", 18, offline ? RED : GREEN, false));
-        root.addView(bar);
+        // ---- header
+        int cnt = 0;
+        double sum = 0;
+        Calendar c = Calendar.getInstance();
+        c.set(Calendar.HOUR_OF_DAY, 0); c.set(Calendar.MINUTE, 0); c.set(Calendar.SECOND, 0); c.set(Calendar.MILLISECOND, 0);
+        for (JSONObject o : Store.orders) if (Store.ts(o) >= c.getTimeInMillis()) { cnt++; sum += o.optDouble("total"); }
 
-        // tabs
-        LinearLayout tabs = new LinearLayout(this);
-        tabs.setOrientation(LinearLayout.HORIZONTAL);
+        LinearLayout head = hbox();
+        head.setPadding(dp(16), dp(12), dp(16), dp(10));
+        ImageView logo = new ImageView(this);
+        logo.setImageResource(R.mipmap.ic_launcher);
+        head.addView(logo, lp(dp(44), dp(44), 0f, 0, 0, 12, 0));
+        LinearLayout titles = vbox();
+        titles.addView(tv("Grill Hub · Kuchnia", 20, TEXT, true));
+        titles.addView(tv("Dzisiaj: " + cnt + " zamówień · " + Store.money(sum) + " zł", 13, DIM, false));
+        head.addView(titles, lp(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f, 0, 0, 0, 0));
+        boolean bad = Store.offline || Store.authError;
+        head.addView(chip(bad ? "● OFFLINE" : "● ONLINE", bad ? RED_DIM : 0x2622C55E, bad ? RED : GREEN));
+        root.addView(head);
+
+        // ---- tabs
+        LinearLayout tabs = hbox();
+        tabs.setPadding(dp(12), 0, dp(12), dp(8));
         String[][] T = {
-                {"orders", "Orders", String.valueOf(act.size())},
-                {"sched", "Scheduled", String.valueOf(sch.size())},
-                {"history", "History", "0"}};
+                {"orders", "Zamówienia", String.valueOf(act.size())},
+                {"sched", "Zaplanowane", String.valueOf(sch.size())},
+                {"history", "Historia", "0"}};
         for (final String[] t : T) {
             boolean on = tab.equals(t[0]);
-            String label = t[1] + (!t[2].equals("0") ? " (" + t[2] + ")" : "");
-            TextView tb = tv(label, 15, on ? FG : DIM, on);
+            String label = t[1] + (!t[2].equals("0") ? "  " + t[2] : "");
+            TextView tb = tv(label, 15, on ? Color.WHITE : DIM, true);
             tb.setGravity(Gravity.CENTER);
-            tb.setPadding(0, dp(12), 0, dp(12));
-            tb.setBackgroundColor(on ? ORANGE : GRAY);
+            tb.setBackground(ripple(on ? ORANGE : SURFACE2, 22));
+            tb.setClickable(true);
             tb.setOnClickListener(v -> {
                 tab = t[0];
-                sp.edit().putString("tab", tab).apply();
+                prefs.edit().putString("tab", tab).apply();
+                sv = null;
                 render();
             });
-            tabs.addView(tb, lp(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f, 0, 0, 0, 0));
+            tabs.addView(tb, lp(0, dp(46), 1f, 4, 0, 4, 0));
         }
         root.addView(tabs);
 
-        // list
+        // ---- list (grid of cards; more columns on a tablet)
         List<JSONObject> list = tab.equals("orders") ? act : tab.equals("sched") ? sch : his;
-        LinearLayout box = new LinearLayout(this);
-        box.setOrientation(LinearLayout.VERTICAL);
-        box.setPadding(dp(10), dp(10), dp(10), dp(10));
+        int widthDp = (int) (getResources().getDisplayMetrics().widthPixels / getResources().getDisplayMetrics().density);
+        int cols = Math.max(1, Math.min(3, widthDp / 360));
+
+        LinearLayout box = vbox();
+        box.setPadding(dp(8), dp(4), dp(8), dp(24));
         if (list.isEmpty()) {
-            TextView e = tv(tab.equals("orders") ? "Czekamy na zamówienia…" : tab.equals("sched") ? "Brak zamówień zaplanowanych." : "Brak historii.", 16, DIM, false);
-            e.setGravity(Gravity.CENTER);
-            e.setPadding(0, dp(60), 0, 0);
-            box.addView(e);
+            LinearLayout empty = vbox();
+            empty.setGravity(Gravity.CENTER);
+            empty.setPadding(0, dp(90), 0, 0);
+            TextView icon = tv(tab.equals("orders") ? "🍽" : tab.equals("sched") ? "🕒" : "📋", 54, TEXT, false);
+            icon.setGravity(Gravity.CENTER);
+            empty.addView(icon);
+            TextView msg = tv(tab.equals("orders") ? "Czekamy na zamówienia…" : tab.equals("sched") ? "Brak zaplanowanych zamówień" : "Brak historii", 18, DIM, false);
+            msg.setGravity(Gravity.CENTER);
+            msg.setPadding(0, dp(10), 0, 0);
+            empty.addView(msg);
+            box.addView(empty, new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT));
         } else {
-            if (tab.equals("history")) {
-                Calendar c = Calendar.getInstance();
-                c.set(Calendar.HOUR_OF_DAY, 0); c.set(Calendar.MINUTE, 0); c.set(Calendar.SECOND, 0); c.set(Calendar.MILLISECOND, 0);
-                int cnt = 0; double sum = 0;
-                for (JSONObject o : orders) if (ts(o) >= c.getTimeInMillis()) { cnt++; sum += o.optDouble("total"); }
-                box.addView(tv("Dzisiaj: " + cnt + " zamówień · " + money(sum) + " zł", 15, FG, true));
+            for (int i = 0; i < list.size(); i += cols) {
+                LinearLayout row = new LinearLayout(this);
+                row.setOrientation(LinearLayout.HORIZONTAL);
+                row.setBaselineAligned(false);
+                for (int k = 0; k < cols; k++) {
+                    int idx = i + k;
+                    LinearLayout.LayoutParams p = lp(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f, 6, 6, 6, 6);
+                    if (idx < list.size()) row.addView(card(list.get(idx), tab.equals("sched")), p);
+                    else row.addView(new View(this), p);
+                }
+                box.addView(row, new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT));
             }
-            for (JSONObject o : list) box.addView(card(o, tab.equals("sched")), lp(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT, 0f, 0, dp(8), 0, 0));
         }
 
-        sv = new ScrollView(this);
-        sv.addView(box);
-        root.addView(sv, new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, 0, 1f));
-        sv.post(() -> sv.scrollTo(0, y));
+        ScrollView s = new ScrollView(this);
+        s.setFillViewport(true);
+        s.addView(box);
+        root.addView(s, new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, 0, 1f));
+        sv = s;
+        s.post(() -> s.scrollTo(0, scrollY));
     }
+
+    // ------------------------------------------------------------ order card
 
     private View card(final JSONObject o, boolean scheduled) {
         final int id = o.optInt("id");
-        boolean done = o.optBoolean("done");
-        boolean dine = "dine".equals(o.optString("mode"));
+        final boolean done = o.optBoolean("done");
+        final boolean dine = "dine".equals(o.optString("mode"));
+        final boolean ringing = Store.isRinging(id);
 
-        LinearLayout c = new LinearLayout(this);
-        c.setOrientation(LinearLayout.VERTICAL);
-        c.setPadding(dp(14), dp(12), dp(14), dp(12));
-        GradientDrawable bg = new GradientDrawable();
-        bg.setColor(CARD);
-        bg.setCornerRadius(dp(10));
-        if (ring.contains(id)) bg.setStroke(dp(3), ORANGE);
+        LinearLayout c = vbox();
+        c.setPadding(dp(16), dp(14), dp(16), dp(16));
+        GradientDrawable bg = shape(SURFACE, 18);
+        bg.setStroke(dp(ringing ? 3 : 1), ringing ? ORANGE : LINE);
         c.setBackground(bg);
-        if (done) c.setAlpha(0.6f);
+        if (done) c.setAlpha(0.65f);
 
-        // number + source + time
-        LinearLayout head = new LinearLayout(this);
-        head.setOrientation(LinearLayout.HORIZONTAL);
-        head.setGravity(Gravity.CENTER_VERTICAL);
-        String src = o.optString("src", "");
-        head.addView(tv("#" + o.optInt("num") + (!src.isEmpty() && !src.equals("direct") ? "  [" + src + "]" : ""), 24, ORANGE, true),
-                lp(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f, 0, 0, 0, 0));
-        head.addView(tv(dt(o), 13, DIM, false));
+        // number + time
+        LinearLayout head = hbox();
+        head.addView(tv("#" + o.optInt("num"), 32, ORANGE, true), lp(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f, 0, 0, 0, 0));
+        LinearLayout when = vbox();
+        TextView t1 = tv(Store.hhmm(o), 18, TEXT, true);
+        t1.setGravity(Gravity.END);
+        TextView t2 = tv(Store.ago(o), 12, DIM, false);
+        t2.setGravity(Gravity.END);
+        when.addView(t1);
+        when.addView(t2);
+        head.addView(when);
         c.addView(head);
 
-        if (scheduled) c.addView(tv("Odbiór za " + inMin(etaMs(o)) + " (" + o.optString("eta") + ")", 15, ORANGE, true));
+        // type chips
+        LinearLayout chips = hbox();
+        chips.addView(dine ? chip("🍽  NA MIEJSCU" + (o.optString("table").isEmpty() ? "" : " · STOLIK " + o.optString("table")), BLUE_DIM, BLUE)
+                : chip("🛍  ODBIÓR", PURPLE_DIM, PURPLE));
+        String src = o.optString("src", "");
+        if (!src.isEmpty() && !src.equals("direct")) chips.addView(chip(src, SURFACE2, DIM), lp(ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT, 0f, 8, 0, 0, 0));
+        c.addView(chips, lp(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT, 0f, 0, 8, 0, 0));
 
-        c.addView(tv(dine ? "Na miejscu · Stolik: " + o.optString("table") : "Odbiór", 14, DIM, false));
+        if (scheduled) {
+            c.addView(tv("🕒  Odbiór za " + Store.inMin(Store.etaMs(o)) + " (" + o.optString("eta") + ")", 15, ORANGE, true),
+                    lp(ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT, 0f, 0, 8, 0, 0));
+        }
         if (!dine) {
-            String who = o.optString("name") + " · " + o.optString("phone") + (!o.optString("eta").isEmpty() ? " · " + o.optString("eta") : "");
-            c.addView(tv(who, 16, FG, true));
+            String who = o.optString("name") + (o.optString("phone").isEmpty() ? "" : "  ·  " + o.optString("phone"));
+            c.addView(tv(who, 16, TEXT, true), lp(ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT, 0f, 0, 8, 0, 0));
+            if (!o.optString("eta").isEmpty() && !scheduled)
+                c.addView(tv("Godzina odbioru: " + o.optString("eta"), 14, AMBER, true));
         }
 
-        // prep time
-        long readyAt = o.optLong("ready_at");
-        boolean hasEta = !dine && !o.optString("eta").isEmpty();
-        if (!done && readyAt > 0 && !hasEta) {
-            long m = (long) Math.ceil((readyAt * 1000 - (System.currentTimeMillis() + srvOff)) / 60000.0);
-            c.addView(tv(m > 0 ? "Obiecane: za " + m + " min" : "Obiecany czas minął", 14, m > 0 ? FG : 0xFFFF6B6B, true),
-                    lp(ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT, 0f, 0, dp(6), 0, 0));
-            LinearLayout pr = new LinearLayout(this);
-            pr.setOrientation(LinearLayout.HORIZONTAL);
-            for (final int mins : new int[]{5, 10, 15, 20, 30}) {
-                pr.addView(btn(mins + "′", GRAY, v -> act("orders/" + id + "/prep?min=" + mins, body -> {
-                    try { o.put("ready_at", new JSONObject(body).optLong("ready_at")); } catch (Exception e) { /* ignore */ }
-                })), lp(0, dp(44), 1f, dp(2), dp(4), dp(2), 0));
-            }
-            c.addView(pr);
-        }
+        addDivider(c);
 
-        // lines
-        LinearLayout items = new LinearLayout(this);
-        items.setOrientation(LinearLayout.VERTICAL);
-        items.setPadding(0, dp(8), 0, dp(4));
+        // items
         JSONArray lines = o.optJSONArray("lines");
         if (lines != null) for (int i = 0; i < lines.length(); i++) {
             JSONObject l = lines.optJSONObject(i);
             if (l == null) continue;
-            items.addView(tv(l.optInt("qty") + "×  " + l.optString("name"), 18, FG, true));
+            LinearLayout row = new LinearLayout(this);
+            row.setOrientation(LinearLayout.HORIZONTAL);
+            TextView q = tv(l.optInt("qty") + "×", 16, ORANGE, true);
+            q.setGravity(Gravity.CENTER);
+            q.setBackground(shape(ORANGE_DIM, 8));
+            q.setPadding(dp(8), dp(2), dp(8), dp(2));
+            row.addView(q, lp(ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT, 0f, 0, 2, 10, 0));
+            LinearLayout col = vbox();
+            col.addView(tv(l.optString("name"), 17, TEXT, true));
             String d = l.optString("desc", "");
-            if (!d.isEmpty()) {
-                TextView dd = tv(d, 13, DIM, false);
-                dd.setPadding(dp(28), 0, 0, dp(2));
-                items.addView(dd);
-            }
+            if (!d.isEmpty()) col.addView(tv(d, 13, DIM, false));
+            row.addView(col, lp(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f, 0, 0, 0, 0));
+            c.addView(row, lp(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT, 0f, 0, 5, 0, 5));
         }
-        c.addView(items);
 
         String notes = o.optString("notes", "");
         if (!notes.isEmpty()) {
-            TextView n = tv("UWAGI: " + notes, 15, 0xFFFFD54F, true);
-            n.setPadding(0, dp(4), 0, dp(4));
-            c.addView(n);
+            TextView n = tv("📝  " + notes, 15, AMBER, true);
+            n.setBackground(shape(AMBER_DIM, 10));
+            n.setPadding(dp(12), dp(8), dp(12), dp(8));
+            c.addView(n, lp(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT, 0f, 0, 8, 0, 0));
         }
 
+        addDivider(c);
+
+        // fees + total
+        LinearLayout foot = hbox();
         StringBuilder fee = new StringBuilder();
-        if (o.optDouble("deposit", 0) > 0) fee.append("Kaucja +").append(money(o.optDouble("deposit"))).append(" zł  ");
-        if (o.optDouble("pack", 0) > 0) fee.append("Opakowanie +").append(money(o.optDouble("pack"))).append(" zł  ");
-        if (o.optDouble("combo", 0) > 0) fee.append("Zestaw −").append(money(o.optDouble("combo"))).append(" zł  ");
-        if (o.optDouble("coupon", 0) > 0) fee.append("Kod ").append(o.optString("code")).append(" −").append(money(o.optDouble("coupon"))).append(" zł");
-        if (fee.length() > 0) c.addView(tv(fee.toString().trim(), 13, DIM, false));
+        if (o.optDouble("deposit", 0) > 0) fee.append("Kaucja +").append(Store.money(o.optDouble("deposit"))).append(" zł\n");
+        if (o.optDouble("pack", 0) > 0) fee.append("Opakowanie +").append(Store.money(o.optDouble("pack"))).append(" zł\n");
+        if (o.optDouble("combo", 0) > 0) fee.append("Zestaw −").append(Store.money(o.optDouble("combo"))).append(" zł\n");
+        if (o.optDouble("coupon", 0) > 0) fee.append("Kod ").append(o.optString("code")).append(" −").append(Store.money(o.optDouble("coupon"))).append(" zł\n");
+        TextView f = tv(fee.toString().trim(), 12, DIM, false);
+        foot.addView(f, lp(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f, 0, 0, 0, 0));
+        foot.addView(tv(Store.money(o.optDouble("total")) + " zł", 24, TEXT, true));
+        c.addView(foot);
 
-        TextView tot = tv(money(o.optDouble("total")) + " zł", 20, FG, true);
-        tot.setGravity(Gravity.END);
-        c.addView(tot);
-
-        // buttons
+        // actions
         if (done) {
-            c.addView(btn("↩ Przywróć", GRAY, v -> act("orders/" + id + "/done?undo=1", body -> {
-                try { o.put("done", false); } catch (Exception e) { /* ignore */ }
-            })), lp(ViewGroup.LayoutParams.MATCH_PARENT, dp(52), 0f, 0, dp(6), 0, 0));
+            c.addView(button("↩  Przywróć", SURFACE2, 16, v -> Store.setDone(id, false, null)),
+                    lp(ViewGroup.LayoutParams.MATCH_PARENT, dp(52), 0f, 0, 12, 0, 0));
+        } else if (ringing) {
+            TextView acc = button("✓  PRZYJMIJ ZAMÓWIENIE", ORANGE, 19, v -> Store.accept(id));
+            c.addView(acc, lp(ViewGroup.LayoutParams.MATCH_PARENT, dp(66), 0f, 0, 12, 0, 0));
         } else {
-            c.addView(btn("✓ Gotowe", GREEN, v -> act("orders/" + id + "/done", body -> {
-                try { o.put("done", true); } catch (Exception e) { /* ignore */ }
-                ring.remove(id);
-            })), lp(ViewGroup.LayoutParams.MATCH_PARENT, dp(56), 0f, 0, dp(6), 0, 0));
+            long readyAt = o.optLong("ready_at");
+            boolean hasEta = !dine && !o.optString("eta").isEmpty();
+            if (readyAt > 0 && !hasEta) {
+                long m = (long) Math.ceil((readyAt * 1000 - Store.serverNow()) / 60000.0);
+                c.addView(tv(m > 0 ? "⏱  Obiecane: za " + m + " min" : "⏱  Obiecany czas minął", 14, m > 0 ? TEXT : RED, true),
+                        lp(ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT, 0f, 0, 10, 0, 0));
+                LinearLayout pr = hbox();
+                for (final int mins : new int[]{5, 10, 15, 20, 30}) {
+                    pr.addView(button("+" + mins + "′", SURFACE2, 15, v -> Store.setPrep(id, mins, r -> {
+                        if (r == null) Toast.makeText(this, "Błąd sieci", Toast.LENGTH_SHORT).show();
+                    })), lp(0, dp(44), 1f, 2, 6, 2, 0));
+                }
+                c.addView(pr);
+            }
+            c.addView(button("✓  GOTOWE", GREEN, 18, v -> Store.setDone(id, true, r -> {
+                if (r == null) Toast.makeText(this, "Błąd sieci", Toast.LENGTH_SHORT).show();
+            })), lp(ViewGroup.LayoutParams.MATCH_PARENT, dp(58), 0f, 0, 12, 0, 0));
         }
         return c;
+    }
+
+    private void addDivider(LinearLayout parent) {
+        View d = new View(this);
+        d.setBackgroundColor(LINE);
+        parent.addView(d, lp(ViewGroup.LayoutParams.MATCH_PARENT, 1, 0f, 0, 10, 0, 6));
     }
 }
