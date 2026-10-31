@@ -9,7 +9,7 @@ permissions:
 
 jobs:
   build:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v4
 
@@ -18,15 +18,12 @@ jobs:
           distribution: temurin
           java-version: 17
 
-      - uses: android-actions/setup-android@v3
-
       - uses: gradle/actions/setup-gradle@v4
         with:
           gradle-version: 8.9
 
-      - run: gradle assembleDebug --no-daemon
+      - run: gradle assembleDebug --no-daemon --stacktrace
 
-      # رابط تحميل مباشر في صفحة Releases (يشتغل من الموبايل)
       - uses: softprops/action-gh-release@v2
         with:
           tag_name: apk-${{ github.run_number }}
