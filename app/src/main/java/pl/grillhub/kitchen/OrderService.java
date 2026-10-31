@@ -222,20 +222,9 @@ public class OrderService extends Service implements Store.Listener {
             am.setStreamVolume(AudioManager.STREAM_ALARM, am.getStreamMaxVolume(AudioManager.STREAM_ALARM), 0);
         } catch (Exception e) { /* ignore */ }
 
-        Uri uri = RingtoneManager.getDefaultUri(RingtoneManager.TYPE_ALARM);
-        if (uri == null) uri = RingtoneManager.getDefaultUri(RingtoneManager.TYPE_RINGTONE);
-        if (uri == null) uri = RingtoneManager.getDefaultUri(RingtoneManager.TYPE_NOTIFICATION);
         try {
-            MediaPlayer mp = new MediaPlayer();
-            mp.setAudioAttributes(new AudioAttributes.Builder()
-                    .setUsage(AudioAttributes.USAGE_ALARM)
-                    .setContentType(AudioAttributes.CONTENT_TYPE_SONIFICATION)
-                    .build());
-            mp.setDataSource(this, uri);
-            mp.setLooping(true);
-            mp.setVolume(1f, 1f);
+            MediaPlayer mp = Alarm.create(this);
             mp.setOnErrorListener((m, what, extra) -> { stopAlarm(); return true; });
-            mp.prepare();
             mp.start();
             player = mp;
         } catch (Exception e) {

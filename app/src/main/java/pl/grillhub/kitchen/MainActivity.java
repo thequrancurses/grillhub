@@ -645,13 +645,10 @@ public class MainActivity extends Activity implements Store.Listener {
 
     private void testAlarm() {
         try {
-            Uri u = RingtoneManager.getDefaultUri(RingtoneManager.TYPE_ALARM);
-            if (u == null) u = RingtoneManager.getDefaultUri(RingtoneManager.TYPE_RINGTONE);
-            final Ringtone r = RingtoneManager.getRingtone(this, u);
-            r.setAudioAttributes(new AudioAttributes.Builder().setUsage(AudioAttributes.USAGE_ALARM).build());
-            r.play();
-            ui.postDelayed(() -> { try { r.stop(); } catch (Exception e) { /* ignore */ } }, 3500);
-            Toast.makeText(this, "Playing the alarm for 3 seconds…", Toast.LENGTH_SHORT).show();
+            final android.media.MediaPlayer mp = Alarm.create(this);
+            mp.start();
+            ui.postDelayed(() -> { try { mp.stop(); mp.release(); } catch (Exception e) { /* ignore */ } }, 3600);
+            Toast.makeText(this, "Playing the alarm for a few seconds…", Toast.LENGTH_SHORT).show();
         } catch (Exception e) {
             Toast.makeText(this, "Can't play the alarm sound", Toast.LENGTH_SHORT).show();
         }
@@ -1013,6 +1010,18 @@ public class MainActivity extends Activity implements Store.Listener {
         box.addView(sectionTitle("App"));
         LinearLayout ap = panel();
         toggleRow(ap, "Keep screen on", "keep_screen");
+        LinearLayout snd = settingRow("Alarm sound");
+        for (final String[] o : new String[][]{{"chime", "Chime"}, {"system", "System alarm"}}) {
+            boolean on = o[0].equals(Alarm.useSystem(this) ? "system" : "chime");
+            TextView t = tv(o[1], 14, on ? Color.WHITE : DIM, true);
+            t.setGravity(Gravity.CENTER);
+            t.setBackground(shape(on ? ORANGE : SURFACE2, 20));
+            t.setPadding(dp(14), dp(7), dp(14), dp(7));
+            t.setClickable(true);
+            t.setOnClickListener(v -> { Printer.set(this, "alarm", o[0]); render(); });
+            snd.addView(t, lp(ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT, 0f, 4, 0, 0, 0));
+        }
+        ap.addView(snd);
         ap.addView(button("🔔  Test alarm sound", SURFACE2, 16, v -> testAlarm()), lp(ViewGroup.LayoutParams.MATCH_PARENT, dp(50), 0f, 0, 8, 0, 0));
         box.addView(ap);
 

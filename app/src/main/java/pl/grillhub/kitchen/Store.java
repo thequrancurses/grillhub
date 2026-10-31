@@ -49,6 +49,9 @@ final class Store {
 
     private static final Set<Integer> acked = new HashSet<>();
     private static final Set<Integer> printed = new HashSet<>();
+    private static final Set<Integer> pendingAcc = new HashSet<>();     // accepted here, server not told yet
+    private static final Set<Integer> accInflight = new HashSet<>();
+    private static boolean accUnsupported = false;                      // server plugin has no /accept route yet
     private static final List<Listener> listeners = new ArrayList<>();
     private static final Handler main = new Handler(Looper.getMainLooper());
     private static final ExecutorService net = Executors.newFixedThreadPool(3);
@@ -66,6 +69,7 @@ final class Store {
         prefs = c.getApplicationContext().getSharedPreferences("kitchen", Context.MODE_PRIVATE);
         load("acked", acked);
         load("printed", printed);
+        load("pacc", pendingAcc);
     }
 
     private static void load(String key, Set<Integer> into) {
@@ -97,6 +101,7 @@ final class Store {
     // ------------------------------------------------------------ polling
 
     static void poll() {
+        syncAccepts();
         if (busy) return;
         busy = true;
         final boolean full = !loaded || (++pollN % 5 == 0);
@@ -148,10 +153,12 @@ final class Store {
                 try {
                     if (ex.optBoolean("done") != o.optBoolean("done")) { ex.put("done", o.optBoolean("done")); changed = true; }
                     if (ex.optLong("ready_at") != o.optLong("ready_at")) { ex.put("ready_at", o.optLong("ready_at")); changed = true; }
+                    if (ex.optBoolean("accepted") != o.optBoolean("accepted")) { ex.put("accepted", o.optBoolean("accepted")); changed = true; }
                 } catch (Exception e) { /* ignore */ }
                 continue;
             }
             orders.add(o);
+            if (o.optBoolean("accepted")) pendingAcc.remove(id);
             changed = true;
             lastId = Math.max(lastId, id);
             if (first) { acked.add(id); printed.add(id); }   // very first run: old orders must not ring or print
@@ -174,6 +181,7 @@ final class Store {
         for (JSONObject o : orders) {
             if (o.optBoolean("done")) continue;
             if (acked.contains(o.optInt("id"))) continue;
+            if (o.optBoolean("accepted")) continue;          // accepted on another device / by the server
             if (now - ts(o) > MAX_RING_AGE) continue;
             out.add(o);
         }
@@ -188,13 +196,47 @@ final class Store {
     static void accept(int id) {
         acked.add(id);
         persistAcked();
+        queueAccept(id);
         notifyChange();
     }
 
     static void acceptAll() {
-        for (JSONObject o : ringing()) acked.add(o.optInt("id"));
+        for (JSONObject o : ringing()) { acked.add(o.optInt("id")); queueAccept(o.optInt("id")); }
         persistAcked();
         notifyChange();
+    }
+
+    private static void queueAccept(int id) {
+        pendingAcc.add(id);
+        persist("pacc", pendingAcc);
+        syncAccepts();
+    }
+
+    /** Tells the website "this order was accepted" (so the customer can be told). Retries until it works. */
+    static void syncAccepts() {
+        if (accUnsupported || pendingAcc.isEmpty()) return;
+        for (final int id : new ArrayList<>(pendingAcc)) {
+            if (!accInflight.add(id)) continue;
+            net.execute(() -> {
+                boolean ok = false, noRoute = false, gone = false;
+                try {
+                    request("orders/" + id + "/accept", "POST");
+                    ok = true;
+                } catch (AuthException e) {
+                    /* PIN problem: keep trying */
+                } catch (Exception e) {
+                    String m = e.getMessage() == null ? "" : e.getMessage();
+                    if (m.contains("rest_no_route")) noRoute = true;
+                    else if (m.startsWith("HTTP 404")) gone = true;
+                }
+                final boolean fo = ok, fr = noRoute, fg = gone;
+                main.post(() -> {
+                    accInflight.remove(id);
+                    if (fo || fg) { pendingAcc.remove(id); persist("pacc", pendingAcc); }
+                    else if (fr) { accUnsupported = true; pendingAcc.clear(); persist("pacc", pendingAcc); }
+                });
+            });
+        }
     }
 
     // ------------------------------------------------------------ printing state
@@ -283,7 +325,7 @@ final class Store {
             c.setReadTimeout(10000);
             c.setRequestProperty("X-GHM-PIN", PIN);
             c.setRequestProperty("Cache-Control", "no-store");
-            c.setRequestProperty("User-Agent", "GrillHubKitchen/2.0 (Android)");
+            c.setRequestProperty("User-Agent", "GrillHubKitchen/5.0 (Android)");
             if (method.equals("POST")) {
                 c.setDoOutput(true);
                 c.setFixedLengthStreamingMode(0);
@@ -291,7 +333,20 @@ final class Store {
             }
             int code = c.getResponseCode();
             if (code == 401 || code == 403) throw new AuthException();
-            if (code >= 400) throw new IOException("HTTP " + code);
+            if (code >= 400) {
+                String err = "";
+                try {
+                    InputStream es = c.getErrorStream();
+                    if (es != null) {
+                        ByteArrayOutputStream eo = new ByteArrayOutputStream();
+                        byte[] eb = new byte[2048];
+                        int en;
+                        while ((en = es.read(eb)) > 0 && eo.size() < 4096) eo.write(eb, 0, en);
+                        err = eo.toString("UTF-8");
+                    }
+                } catch (Exception ignore) { /* ignore */ }
+                throw new IOException("HTTP " + code + " " + err);
+            }
             InputStream in = c.getInputStream();
             ByteArrayOutputStream out = new ByteArrayOutputStream();
             byte[] buf = new byte[8192];
