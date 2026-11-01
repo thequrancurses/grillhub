@@ -1,6 +1,11 @@
 package pl.grillhub.kitchen;
 
 import android.app.Activity;
+import android.app.Dialog;
+import android.database.Cursor;
+import android.graphics.drawable.ColorDrawable;
+import android.provider.OpenableColumns;
+import android.view.Window;
 import android.media.AudioAttributes;
 import android.media.Ringtone;
 import android.media.RingtoneManager;
@@ -75,6 +80,11 @@ public class MainActivity extends Activity implements Store.Listener {
     private final List<PrinterScan.Found> found = new ArrayList<>();
     private boolean scanning = false, scanned = false;
     private String query = "";
+    private static final int RC_PICK = 5;
+    private static final class Cd { final TextView t; final int id; Cd(TextView t, int id) { this.t = t; this.id = id; } }
+    private final List<Cd> cds = new ArrayList<>();
+    private TextView dlgCountdown = null;
+    private int dlgId = 0;
     private boolean animNew = false, renderedOnce = false;
     private final Set<Integer> shown = new HashSet<>();
 
@@ -83,6 +93,14 @@ public class MainActivity extends Activity implements Store.Listener {
     private LinearLayout root;
     private ScrollView sv;
     private String tab = "orders";
+
+    private final Runnable secTick = new Runnable() {
+        @Override public void run() {
+            for (Cd c : cds) paintCountdown(c.t, c.id);
+            if (dlgCountdown != null) paintCountdown(dlgCountdown, dlgId);
+            ui.postDelayed(this, 1000);
+        }
+    };
 
     private final Runnable clock = new Runnable() {
         @Override public void run() {
@@ -128,12 +146,15 @@ public class MainActivity extends Activity implements Store.Listener {
         render();
         ui.removeCallbacks(clock);
         ui.postDelayed(clock, 15000);
+        ui.removeCallbacks(secTick);
+        ui.postDelayed(secTick, 1000);
     }
 
     @Override
     protected void onStop() {
         Store.removeListener(this);
         ui.removeCallbacks(clock);
+        ui.removeCallbacks(secTick);
         PrinterScan.stop();
         scanning = false;
         super.onStop();
@@ -199,6 +220,24 @@ public class MainActivity extends Activity implements Store.Listener {
     @Override
     protected void onActivityResult(int code, int res, Intent data) {
         super.onActivityResult(code, res, data);
+        if (code == RC_PICK) {
+            if (res == RESULT_OK && data != null && data.getData() != null) {
+                Uri u = data.getData();
+                try { getContentResolver().takePersistableUriPermission(u, Intent.FLAG_GRANT_READ_URI_PERMISSION); } catch (Exception e) { /* ignore */ }
+                String name = "sound file";
+                try (Cursor cur = getContentResolver().query(u, null, null, null, null)) {
+                    if (cur != null && cur.moveToFirst()) {
+                        int i = cur.getColumnIndex(OpenableColumns.DISPLAY_NAME);
+                        if (i >= 0) name = cur.getString(i);
+                    }
+                } catch (Exception e) { /* ignore */ }
+                Printer.set(this, "alarm_uri", u.toString());
+                Printer.set(this, "alarm_name", name);
+                Printer.set(this, "alarm", "custom");
+                render();
+            }
+            return;
+        }
         setupNext();
     }
 
@@ -291,6 +330,7 @@ public class MainActivity extends Activity implements Store.Listener {
         List<JSONObject> ring = Store.ringing();
 
         root.removeAllViews();
+        cds.clear();
 
         // ---- banners
         if (!ring.isEmpty()) {
@@ -472,6 +512,7 @@ public class MainActivity extends Activity implements Store.Listener {
         LinearLayout c = vbox();
         c.setPadding(dp(16), dp(12), dp(16), dp(16));
         outer.addView(c);
+        if (!done) outer.setOnClickListener(v -> showPrepDialog(id));      // tap any open order: set its preparation time
         float targetAlpha = done ? 0.65f : 1f;
         outer.setAlpha(targetAlpha);
         if (shown.add(id) && animNew) {
@@ -562,38 +603,29 @@ public class MainActivity extends Activity implements Store.Listener {
         foot.addView(tv(Store.money(o.optDouble("total")) + " PLN", 24, TEXT, true));
         c.addView(foot);
 
-        // actions
+        // ---- preparation time: live countdown + "Set time"
+        if (!done && (!ringing || o.optLong("ready_at") > 0)) {
+            LinearLayout tr = hbox();
+            TextView cd = tv("", 20, TEXT, true);
+            tr.addView(cd, lp(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f, 0, 0, 0, 0));
+            tr.addView(button("⏱ Set time", SURFACE2, 14, v -> showPrepDialog(id)), lp(dp(124), dp(42), 0f, 8, 0, 0, 0));
+            c.addView(tr, lp(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT, 0f, 0, 12, 0, 0));
+            cds.add(new Cd(cd, id));
+            paintCountdown(cd, id);
+        }
+
+        // ---- actions
         if (done) {
             c.addView(button("↩  Restore", SURFACE2, 16, v -> Store.setDone(id, false, null)),
                     lp(ViewGroup.LayoutParams.MATCH_PARENT, dp(52), 0f, 0, 12, 0, 0));
         } else if (ringing) {
-            TextView acc = button("✓  ACCEPT ORDER", ORANGE, 19, v -> Store.accept(id));
-            c.addView(acc, lp(ViewGroup.LayoutParams.MATCH_PARENT, dp(66), 0f, 0, 12, 0, 0));
-            if (dine || o.optString("eta").isEmpty()) {
-                c.addView(tv("ACCEPT & PROMISE READY IN", 11, DIM, true), lp(ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT, 0f, 2, 10, 0, 0));
-                LinearLayout pp = hbox();
-                for (final int mins : new int[]{10, 15, 20, 30}) {
-                    pp.addView(button(mins + " min", ORANGE_DIM, 15, v -> Store.setPrep(id, mins, r -> {
-                        if (r == null) Toast.makeText(this, "Network error", Toast.LENGTH_SHORT).show();
-                    })), lp(0, dp(46), 1f, 2, 4, 2, 0));
-                }
-                c.addView(pp);
-            }
+            c.addView(button("✓  ACCEPT ORDER", ORANGE, 19, v -> Store.accept(id)),
+                    lp(ViewGroup.LayoutParams.MATCH_PARENT, dp(66), 0f, 0, 12, 0, 0));
+            c.addView(tv("ACCEPT & PROMISE READY IN", 11, DIM, true), lp(ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT, 0f, 2, 10, 0, 0));
+            c.addView(presetRow(id, new int[]{10, 15, 20, 30}, ORANGE_DIM));
         } else {
-            long readyAt = o.optLong("ready_at");
-            boolean hasEta = !dine && !o.optString("eta").isEmpty();
-            if (readyAt > 0 && !hasEta) {
-                long m = (long) Math.ceil((readyAt * 1000 - Store.serverNow()) / 60000.0);
-                c.addView(tv(m > 0 ? "⏱  Promised: in " + m + " min" : "⏱  Promised time passed", 14, m > 0 ? TEXT : RED, true),
-                        lp(ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT, 0f, 0, 10, 0, 0));
-                LinearLayout pr = hbox();
-                for (final int mins : new int[]{5, 10, 15, 20, 30}) {
-                    pr.addView(button("+" + mins + "′", SURFACE2, 15, v -> Store.setPrep(id, mins, r -> {
-                        if (r == null) Toast.makeText(this, "Network error", Toast.LENGTH_SHORT).show();
-                    })), lp(0, dp(44), 1f, 2, 6, 2, 0));
-                }
-                c.addView(pr);
-            }
+            c.addView(tv("SET TIME FROM NOW", 11, DIM, true), lp(ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT, 0f, 2, 10, 0, 0));
+            c.addView(presetRow(id, new int[]{5, 10, 15, 20, 30}, SURFACE2));
             c.addView(button("✓  READY", GREEN, 18, v -> Store.setDone(id, true, r -> {
                 if (r == null) Toast.makeText(this, "Network error", Toast.LENGTH_SHORT).show();
             })), lp(ViewGroup.LayoutParams.MATCH_PARENT, dp(58), 0f, 0, 12, 0, 0));
@@ -643,6 +675,15 @@ public class MainActivity extends Activity implements Store.Listener {
         }
     }
 
+    private void pickSound() {
+        try {
+            startActivityForResult(new Intent(Intent.ACTION_OPEN_DOCUMENT).addCategory(Intent.CATEGORY_OPENABLE).setType("audio/*")
+                    .addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION | Intent.FLAG_GRANT_PERSISTABLE_URI_PERMISSION), RC_PICK);
+        } catch (Exception e) {
+            Toast.makeText(this, "No file picker available", Toast.LENGTH_SHORT).show();
+        }
+    }
+
     private void testAlarm() {
         try {
             final android.media.MediaPlayer mp = Alarm.create(this);
@@ -652,6 +693,104 @@ public class MainActivity extends Activity implements Store.Listener {
         } catch (Exception e) {
             Toast.makeText(this, "Can't play the alarm sound", Toast.LENGTH_SHORT).show();
         }
+    }
+
+    // ------------------------------------------------------------ preparation time
+
+    private void paintCountdown(TextView t, int id) {
+        JSONObject o = Store.find(id);
+        if (o == null) return;
+        long ra = o.optLong("ready_at");
+        if (ra <= 0) { t.setText("⏱ No time set"); t.setTextColor(DIM); return; }
+        long ms = ra * 1000 - Store.serverNow();
+        boolean late = ms < 0;
+        long s = Math.abs(ms) / 1000;
+        String mmss = String.format(Locale.US, "%d:%02d", s / 60, s % 60);
+        t.setText(late ? "⏱ LATE " + mmss : "⏱ " + mmss + " left");
+        t.setTextColor(late ? RED : ms < 120000 ? AMBER : TEXT);
+    }
+
+    private LinearLayout presetRow(final int id, int[] mins, int color) {
+        LinearLayout pr = hbox();
+        for (final int m : mins) pr.addView(button(m + "′", color, 15, v -> applyPrep(id, m)), lp(0, dp(46), 1f, 2, 4, 2, 0));
+        return pr;
+    }
+
+    private void applyPrep(int id, final int minutes) {
+        Store.setPrep(id, minutes, r -> Toast.makeText(this,
+                r != null ? "Ready in " + minutes + " min — the customer sees it now" : "Network error", Toast.LENGTH_SHORT).show());
+    }
+
+    /** Tap an order: ready-made buttons, your own number of minutes, +/- 5, and the live countdown. */
+    private void showPrepDialog(final int id) {
+        final JSONObject o = Store.find(id);
+        if (o == null) return;
+        final Dialog d = new Dialog(this, android.R.style.Theme_Material_Dialog_NoActionBar_MinWidth);
+        d.requestWindowFeature(Window.FEATURE_NO_TITLE);
+        if (d.getWindow() != null) d.getWindow().setBackgroundDrawable(new ColorDrawable(Color.TRANSPARENT));
+
+        LinearLayout box = vbox();
+        box.setPadding(dp(20), dp(18), dp(20), dp(18));
+        box.setBackground(shape(SURFACE, 22));
+
+        box.addView(tv("Order #" + o.optInt("num"), 22, TEXT, true));
+        box.addView(tv("Set the preparation time. The customer sees it on the website.", 13, DIM, false));
+
+        TextView cd = tv("", 38, TEXT, true);
+        cd.setGravity(Gravity.CENTER);
+        cd.setPadding(0, dp(14), 0, dp(10));
+        box.addView(cd);
+        dlgCountdown = cd;
+        dlgId = id;
+        paintCountdown(cd, id);
+
+        box.addView(tv("MINUTES FROM NOW", 11, ORANGE, true));
+        int[] all = {5, 10, 15, 20, 25, 30, 45, 60};
+        for (int i = 0; i < all.length; i += 4) {
+            LinearLayout row = hbox();
+            for (int k = i; k < i + 4; k++) {
+                final int m = all[k];
+                row.addView(button(String.valueOf(m), SURFACE2, 18, v -> applyPrep(id, m)), lp(0, dp(52), 1f, 3, 4, 3, 0));
+            }
+            box.addView(row);
+        }
+
+        box.addView(tv("OR TYPE YOUR OWN", 11, ORANGE, true), lp(ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT, 0f, 0, 14, 0, 4));
+        LinearLayout cr = hbox();
+        final EditText in = new EditText(this);
+        in.setInputType(InputType.TYPE_CLASS_NUMBER);
+        in.setHint("minutes (1–180)");
+        in.setTextColor(TEXT);
+        in.setHintTextColor(DIM);
+        in.setSingleLine(true);
+        cr.addView(in, lp(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f, 0, 0, 8, 0));
+        cr.addView(button("SET", ORANGE, 16, v -> {
+            int m = -1;
+            try { m = Integer.parseInt(in.getText().toString().trim()); } catch (Exception e) { /* invalid */ }
+            if (m < 1 || m > 180) { Toast.makeText(this, "Enter 1 to 180 minutes", Toast.LENGTH_SHORT).show(); return; }
+            applyPrep(id, m);
+            in.setText("");
+        }), lp(dp(100), dp(50), 0f, 0, 0, 0, 0));
+        box.addView(cr);
+
+        // +/- 5 min on top of what was promised
+        LinearLayout adj = hbox();
+        for (final int delta : new int[]{-5, 5}) {
+            adj.addView(button(delta < 0 ? "−5 min" : "+5 min", SURFACE2, 16, v -> {
+                long ra = o.optLong("ready_at");
+                long left = ra > 0 ? (long) Math.ceil((ra * 1000 - Store.serverNow()) / 60000.0) : 0;
+                int m = (int) Math.max(1, Math.min(180, Math.max(0, left) + delta));
+                applyPrep(id, m);
+            }), lp(0, dp(48), 1f, 3, 0, 3, 0));
+        }
+        box.addView(adj, lp(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT, 0f, 0, 12, 0, 0));
+
+        box.addView(button("Close", SURFACE2, 16, v -> d.dismiss()), lp(ViewGroup.LayoutParams.MATCH_PARENT, dp(48), 0f, 0, 14, 0, 0));
+
+        d.setContentView(box);
+        d.setOnDismissListener(x -> { dlgCountdown = null; });
+        d.show();
+        if (d.getWindow() != null) d.getWindow().setLayout((int) Math.min(dp(440), getResources().getDisplayMetrics().widthPixels * 0.94f), ViewGroup.LayoutParams.WRAP_CONTENT);
     }
 
     /** Totals of every item in all open orders: what the kitchen has to prepare right now. */
@@ -1010,18 +1149,29 @@ public class MainActivity extends Activity implements Store.Listener {
         box.addView(sectionTitle("App"));
         LinearLayout ap = panel();
         toggleRow(ap, "Keep screen on", "keep_screen");
-        LinearLayout snd = settingRow("Alarm sound");
-        for (final String[] o : new String[][]{{"chime", "Chime"}, {"system", "System alarm"}}) {
-            boolean on = o[0].equals(Alarm.useSystem(this) ? "system" : "chime");
-            TextView t = tv(o[1], 14, on ? Color.WHITE : DIM, true);
-            t.setGravity(Gravity.CENTER);
-            t.setBackground(shape(on ? ORANGE : SURFACE2, 20));
-            t.setPadding(dp(14), dp(7), dp(14), dp(7));
-            t.setClickable(true);
-            t.setOnClickListener(v -> { Printer.set(this, "alarm", o[0]); render(); });
-            snd.addView(t, lp(ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT, 0f, 4, 0, 0, 0));
+        ap.addView(tv("ALARM SOUND", 11, DIM, true), lp(ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT, 0f, 4, 8, 0, 4));
+        final String curMode = Alarm.mode(this);
+        String[][] opts = {{"chime", "🔔  Chime (rising ride-request style)"}, {"loud", "📢  Loud beeps (noisy kitchen)"},
+                {"system", "⏰  Tablet's alarm sound"}, {"custom", "🎵  My own sound file"}};
+        for (final String[] op : opts) {
+            boolean on = op[0].equals(curMode);
+            LinearLayout row = hbox();
+            row.setPadding(dp(12), dp(11), dp(12), dp(11));
+            row.setBackground(ripple(on ? 0x33FF6A1A : SURFACE2, 12));
+            row.setClickable(true);
+            row.addView(tv(op[1], 15, TEXT, on), lp(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f, 0, 0, 0, 0));
+            if (on) row.addView(tv("✓", 18, ORANGE, true));
+            row.setOnClickListener(v -> {
+                if (op[0].equals("custom") && Printer.get(this, "alarm_uri").isEmpty()) { pickSound(); return; }
+                Printer.set(this, "alarm", op[0]);
+                render();
+            });
+            ap.addView(row, lp(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT, 0f, 0, 3, 0, 3));
         }
-        ap.addView(snd);
+        if (curMode.equals("custom")) {
+            ap.addView(button("Choose another file…  (" + Printer.get(this, "alarm_name") + ")", SURFACE2, 14, v -> pickSound()),
+                    lp(ViewGroup.LayoutParams.MATCH_PARENT, dp(46), 0f, 0, 6, 0, 0));
+        }
         ap.addView(button("🔔  Test alarm sound", SURFACE2, 16, v -> testAlarm()), lp(ViewGroup.LayoutParams.MATCH_PARENT, dp(50), 0f, 0, 8, 0, 0));
         box.addView(ap);
 
