@@ -512,7 +512,6 @@ public class MainActivity extends Activity implements Store.Listener {
         LinearLayout c = vbox();
         c.setPadding(dp(16), dp(12), dp(16), dp(16));
         outer.addView(c);
-        if (!done) outer.setOnClickListener(v -> showPrepDialog(id));      // tap any open order: set its preparation time
         float targetAlpha = done ? 0.65f : 1f;
         outer.setAlpha(targetAlpha);
         if (shown.add(id) && animNew) {
@@ -604,12 +603,24 @@ public class MainActivity extends Activity implements Store.Listener {
         c.addView(foot);
 
         // ---- preparation time: live countdown + "Set time"
-        if (!done && (!ringing || o.optLong("ready_at") > 0)) {
-            LinearLayout tr = hbox();
-            TextView cd = tv("", 20, TEXT, true);
-            tr.addView(cd, lp(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f, 0, 0, 0, 0));
-            tr.addView(button("⏱ Set time", SURFACE2, 14, v -> showPrepDialog(id)), lp(dp(124), dp(42), 0f, 8, 0, 0, 0));
-            c.addView(tr, lp(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT, 0f, 0, 12, 0, 0));
+        // (open orders only; a ringing order first has to be accepted)
+        if (!done && !ringing) {
+            LinearLayout panel = hbox();
+            panel.setGravity(Gravity.CENTER_VERTICAL);
+            panel.setPadding(dp(8), dp(8), dp(8), dp(8));
+            panel.setBackground(shape(SURFACE2, 16));
+            panel.addView(button("−5", SURFACE, 20, v -> adjustPrep(id, -5)), lp(dp(72), dp(54), 0f, 0, 0, 0, 0));
+            LinearLayout mid = vbox();
+            mid.setGravity(Gravity.CENTER_HORIZONTAL);
+            TextView lbl = tv("PREP TIME", 10, DIM, true);
+            lbl.setGravity(Gravity.CENTER);
+            mid.addView(lbl);
+            TextView cd = tv("", 26, TEXT, true);
+            cd.setGravity(Gravity.CENTER);
+            mid.addView(cd);
+            panel.addView(mid, lp(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f, 4, 0, 4, 0));
+            panel.addView(button("+5", SURFACE, 20, v -> adjustPrep(id, 5)), lp(dp(72), dp(54), 0f, 0, 0, 0, 0));
+            c.addView(panel, lp(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT, 0f, 0, 12, 0, 0));
             cds.add(new Cd(cd, id));
             paintCountdown(cd, id);
         }
@@ -624,8 +635,10 @@ public class MainActivity extends Activity implements Store.Listener {
             c.addView(tv("ACCEPT & PROMISE READY IN", 11, DIM, true), lp(ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT, 0f, 2, 10, 0, 0));
             c.addView(presetRow(id, new int[]{10, 15, 20, 30}, ORANGE_DIM));
         } else {
-            c.addView(tv("SET TIME FROM NOW", 11, DIM, true), lp(ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT, 0f, 2, 10, 0, 0));
-            c.addView(presetRow(id, new int[]{5, 10, 15, 20, 30}, SURFACE2));
+            c.addView(tv("RESET FROM NOW (MIN)", 11, DIM, true), lp(ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT, 0f, 2, 10, 0, 0));
+            LinearLayout pr = presetRow(id, new int[]{10, 15, 20, 30}, SURFACE2);
+            pr.addView(button("✎", SURFACE2, 18, v -> showPrepDialog(id)), lp(0, dp(46), 1f, 2, 4, 2, 0));
+            c.addView(pr);
             c.addView(button("✓  READY", GREEN, 18, v -> Store.setDone(id, true, r -> {
                 if (r == null) Toast.makeText(this, "Network error", Toast.LENGTH_SHORT).show();
             })), lp(ViewGroup.LayoutParams.MATCH_PARENT, dp(58), 0f, 0, 12, 0, 0));
@@ -714,6 +727,17 @@ public class MainActivity extends Activity implements Store.Listener {
         LinearLayout pr = hbox();
         for (final int m : mins) pr.addView(button(m + "′", color, 15, v -> applyPrep(id, m)), lp(0, dp(46), 1f, 2, 4, 2, 0));
         return pr;
+    }
+
+    /** +/- steps on the card: quiet on success (the counter itself is the feedback), a toast only on error. */
+    private void adjustPrep(int id, int delta) {
+        JSONObject o = Store.find(id);
+        if (o == null) return;
+        long ra = o.optLong("ready_at");
+        if (ra <= 0 && delta < 0) return;
+        long left = ra > 0 ? (long) Math.ceil((ra * 1000 - Store.serverNow()) / 60000.0) : 0;
+        int m = (int) Math.max(1, Math.min(180, Math.max(0, left) + delta));
+        Store.setPrep(id, m, r -> { if (r == null) Toast.makeText(this, "Network error", Toast.LENGTH_SHORT).show(); });
     }
 
     private void applyPrep(int id, final int minutes) {
