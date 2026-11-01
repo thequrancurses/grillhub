@@ -81,6 +81,7 @@ public class MainActivity extends Activity implements Store.Listener {
     private boolean scanning = false, scanned = false;
     private String query = "";
     private static final int RC_PICK = 5;
+    private static final int MAX_PREP = 30;      // longest promise allowed, so waiting times stay realistic
     private static final class Cd { final TextView t; final int id; Cd(TextView t, int id) { this.t = t; this.id = id; } }
     private final List<Cd> cds = new ArrayList<>();
     private TextView dlgCountdown = null;
@@ -736,7 +737,8 @@ public class MainActivity extends Activity implements Store.Listener {
         long ra = o.optLong("ready_at");
         if (ra <= 0 && delta < 0) return;
         long left = ra > 0 ? (long) Math.ceil((ra * 1000 - Store.serverNow()) / 60000.0) : 0;
-        int m = (int) Math.max(1, Math.min(180, Math.max(0, left) + delta));
+        if (delta > 0 && left >= MAX_PREP) { Toast.makeText(this, "Maximum is " + MAX_PREP + " minutes", Toast.LENGTH_SHORT).show(); return; }
+        int m = (int) Math.max(1, Math.min(MAX_PREP, Math.max(0, left) + delta));
         Store.setPrep(id, m, r -> { if (r == null) Toast.makeText(this, "Network error", Toast.LENGTH_SHORT).show(); });
     }
 
@@ -769,10 +771,10 @@ public class MainActivity extends Activity implements Store.Listener {
         paintCountdown(cd, id);
 
         box.addView(tv("MINUTES FROM NOW", 11, ORANGE, true));
-        int[] all = {5, 10, 15, 20, 25, 30, 45, 60};
-        for (int i = 0; i < all.length; i += 4) {
+        int[] all = {5, 10, 15, 20, 25, 30};
+        for (int i = 0; i < all.length; i += 3) {
             LinearLayout row = hbox();
-            for (int k = i; k < i + 4; k++) {
+            for (int k = i; k < i + 3; k++) {
                 final int m = all[k];
                 row.addView(button(String.valueOf(m), SURFACE2, 18, v -> applyPrep(id, m)), lp(0, dp(52), 1f, 3, 4, 3, 0));
             }
@@ -783,7 +785,7 @@ public class MainActivity extends Activity implements Store.Listener {
         LinearLayout cr = hbox();
         final EditText in = new EditText(this);
         in.setInputType(InputType.TYPE_CLASS_NUMBER);
-        in.setHint("minutes (1–180)");
+        in.setHint("minutes (1–" + MAX_PREP + ")");
         in.setTextColor(TEXT);
         in.setHintTextColor(DIM);
         in.setSingleLine(true);
@@ -791,7 +793,7 @@ public class MainActivity extends Activity implements Store.Listener {
         cr.addView(button("SET", ORANGE, 16, v -> {
             int m = -1;
             try { m = Integer.parseInt(in.getText().toString().trim()); } catch (Exception e) { /* invalid */ }
-            if (m < 1 || m > 180) { Toast.makeText(this, "Enter 1 to 180 minutes", Toast.LENGTH_SHORT).show(); return; }
+            if (m < 1 || m > MAX_PREP) { Toast.makeText(this, "Maximum is " + MAX_PREP + " minutes", Toast.LENGTH_SHORT).show(); return; }
             applyPrep(id, m);
             in.setText("");
         }), lp(dp(100), dp(50), 0f, 0, 0, 0, 0));
@@ -803,7 +805,7 @@ public class MainActivity extends Activity implements Store.Listener {
             adj.addView(button(delta < 0 ? "−5 min" : "+5 min", SURFACE2, 16, v -> {
                 long ra = o.optLong("ready_at");
                 long left = ra > 0 ? (long) Math.ceil((ra * 1000 - Store.serverNow()) / 60000.0) : 0;
-                int m = (int) Math.max(1, Math.min(180, Math.max(0, left) + delta));
+                int m = (int) Math.max(1, Math.min(MAX_PREP, Math.max(0, left) + delta));
                 applyPrep(id, m);
             }), lp(0, dp(48), 1f, 3, 0, 3, 0));
         }
