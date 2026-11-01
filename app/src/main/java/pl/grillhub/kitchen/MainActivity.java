@@ -540,6 +540,8 @@ public class MainActivity extends Activity implements Store.Listener {
         LinearLayout chips = hbox();
         chips.addView(dine ? chip("🍽  DINE IN" + (o.optString("table").isEmpty() ? "" : " · TABLE " + o.optString("table")), BLUE_DIM, BLUE)
                 : chip("🛍  PICKUP", PURPLE_DIM, PURPLE));
+        chips.addView(Printer.isPaid(o) ? chip("✓ PAID", 0x2622C55E, GREEN) : chip("💵 CASH", AMBER_DIM, AMBER),
+                lp(ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT, 0f, 8, 0, 0, 0));
         String src = o.optString("src", "");
         if (!src.isEmpty() && !src.equals("direct")) chips.addView(chip(src, SURFACE2, DIM), lp(ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT, 0f, 8, 0, 0, 0));
         c.addView(chips, lp(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT, 0f, 0, 8, 0, 0));

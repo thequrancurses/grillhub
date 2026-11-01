@@ -191,7 +191,7 @@ final class Printer {
             B.add(new Blk(two("TOTAL:", Store.money(o.optDouble("total")) + " PLN", cols / 2), 'r', true, 2));
         }
         B.add(new Blk("", 'l', false, 1));
-        B.add(new Blk(CASH_LINE, 'c', true, 1, true));        // Arabic + English, printed as a picture (the printer has no Arabic font)
+        B.add(new Blk(payLine(o), 'c', true, 1, true));        // Arabic + English, printed as a picture (the printer has no Arabic font)
         if (!o.optString("notes").isEmpty()) {
             B.add(new Blk("", 'l', false, 1));
             B.add(new Blk("NOTES:", 'l', true, 1));
@@ -237,6 +237,31 @@ final class Printer {
     }
 
     static final String CASH_LINE = "الدفع كاش - Cash";
+
+    /**
+     * Payment method of an order. The website sends no payment field today (every order is paid in cash), so the default is CASH.
+     * When the site starts sending "paid": true and/or "pay" / "payment" / "payment_method": "online" | "card" | "blik" | "p24" ...,
+     * receipts and cards switch to PAID automatically.
+     */
+    static boolean isPaid(JSONObject o) {
+        if (o.optBoolean("paid", false)) return true;
+        String m = payMethod(o).toLowerCase(Locale.ROOT);
+        if (m.isEmpty()) return false;
+        return !(m.contains("cash") || m.contains("gotówk") || m.contains("gotowk") || m.contains("كاش") || m.equals("cod") || m.equals("pickup") || m.equals("on_pickup") || m.equals("unpaid"));
+    }
+
+    static String payMethod(JSONObject o) {
+        String[] keys = {"pay", "payment", "payment_method", "pay_method"};
+        for (String k : keys) { String v = o.optString(k, "").trim(); if (!v.isEmpty() && !v.equals("null")) return v; }
+        return "";
+    }
+
+    static String payLine(JSONObject o) {
+        if (!isPaid(o)) return CASH_LINE;
+        String m = payMethod(o);
+        boolean generic = m.isEmpty() || m.equalsIgnoreCase("paid") || m.equalsIgnoreCase("online") || m.equals("1") || m.equalsIgnoreCase("true");
+        return "تم الدفع - PAID" + (generic ? "" : " (" + ascii(m).toUpperCase(Locale.ROOT) + ")");
+    }
 
     /** Draws one line of text (any language) as a 1-bit picture: ESC/POS "GS v 0" raster. widthDots: 384 (58 mm) or 576 (80 mm). */
     private static byte[] raster(String text, int widthDots) throws Exception {
