@@ -5,6 +5,11 @@ import android.bluetooth.BluetoothDevice;
 import android.bluetooth.BluetoothSocket;
 import android.content.Context;
 import android.content.SharedPreferences;
+import android.graphics.Bitmap;
+import android.graphics.Canvas;
+import android.graphics.Color;
+import android.graphics.Paint;
+import android.graphics.Typeface;
 import android.hardware.usb.UsbConstants;
 import android.hardware.usb.UsbDevice;
 import android.hardware.usb.UsbDeviceConnection;
@@ -86,8 +91,9 @@ final class Printer {
     // ------------------------------------------------------------ receipt layout
 
     private static final class Blk {
-        final String t; final char a; final boolean b; final int s;
-        Blk(String t, char a, boolean b, int s) { this.t = t; this.a = a; this.b = b; this.s = s; }
+        final String t; final char a; final boolean b; final int s; final boolean img;
+        Blk(String t, char a, boolean b, int s) { this(t, a, b, s, false); }
+        Blk(String t, char a, boolean b, int s, boolean img) { this.t = t; this.a = a; this.b = b; this.s = s; this.img = img; }
     }
 
     private static String ascii(String s) {
@@ -184,6 +190,8 @@ final class Printer {
             if (o.optDouble("coupon", 0) > 0) B.add(new Blk(two("Code " + o.optString("code"), "-" + Store.money(o.optDouble("coupon")), cols), 'l', false, 1));
             B.add(new Blk(two("TOTAL:", Store.money(o.optDouble("total")) + " PLN", cols / 2), 'r', true, 2));
         }
+        B.add(new Blk("", 'l', false, 1));
+        B.add(new Blk(CASH_LINE, 'c', true, 1, true));        // Arabic + English, printed as a picture (the printer has no Arabic font)
         if (!o.optString("notes").isEmpty()) {
             B.add(new Blk("", 'l', false, 1));
             B.add(new Blk("NOTES:", 'l', true, 1));
@@ -204,6 +212,9 @@ final class Printer {
         for (int n = 0; n < copies; n++) {
             b.write(0x1B); b.write(0x40);                                   // init
             for (Blk x : blocks(c, o, cols)) {
+                if (x.img) {
+                    try { b.write(raster(x.t, cols == 32 ? 384 : 576)); continue; } catch (Exception e) { x = new Blk("Payment: CASH", 'c', true, 1); }
+                }
                 b.write(0x1B); b.write(0x61); b.write(x.a == 'c' ? 1 : x.a == 'r' ? 2 : 0);   // align
                 b.write(0x1B); b.write(0x45); b.write(x.b ? 1 : 0);                           // bold
                 b.write(0x1D); b.write(0x21); b.write(x.s == 2 ? 0x11 : 0);                   // size
@@ -223,6 +234,43 @@ final class Printer {
             if (on(c, "cut")) { b.write(0x1D); b.write(0x56); b.write(0x42); b.write(0x00); }
         }
         return b.toByteArray();
+    }
+
+    static final String CASH_LINE = "الدفع كاش - Cash";
+
+    /** Draws one line of text (any language) as a 1-bit picture: ESC/POS "GS v 0" raster. widthDots: 384 (58 mm) or 576 (80 mm). */
+    private static byte[] raster(String text, int widthDots) throws Exception {
+        Paint p = new Paint(Paint.ANTI_ALIAS_FLAG);
+        p.setColor(Color.BLACK);
+        p.setTypeface(Typeface.create(Typeface.DEFAULT, Typeface.BOLD));
+        float size = 46f;
+        p.setTextSize(size);
+        while (p.measureText(text) > widthDots - 16 && size > 18f) { size -= 2f; p.setTextSize(size); }
+        int h = (int) Math.ceil(size * 1.4f);
+        Bitmap bmp = Bitmap.createBitmap(widthDots, h, Bitmap.Config.ARGB_8888);
+        Canvas cv = new Canvas(bmp);
+        cv.drawColor(Color.WHITE);
+        cv.drawText(text, (widthDots - p.measureText(text)) / 2f, size * 1.05f, p);
+        int bpr = widthDots / 8;
+        ByteArrayOutputStream o = new ByteArrayOutputStream();
+        o.write(0x1B); o.write(0x61); o.write(0);                          // left-align (the picture is already full width)
+        o.write(0x1D); o.write(0x76); o.write(0x30); o.write(0x00);
+        o.write(bpr & 0xFF); o.write((bpr >> 8) & 0xFF); o.write(h & 0xFF); o.write((h >> 8) & 0xFF);
+        int[] px = new int[widthDots];
+        for (int y = 0; y < h; y++) {
+            bmp.getPixels(px, 0, widthDots, 0, y, widthDots, 1);
+            for (int xb = 0; xb < bpr; xb++) {
+                int v = 0;
+                for (int k = 0; k < 8; k++) {
+                    int c = px[xb * 8 + k];
+                    int lum = (Color.red(c) * 30 + Color.green(c) * 59 + Color.blue(c) * 11) / 100;
+                    v = (v << 1) | (lum < 140 ? 1 : 0);
+                }
+                o.write(v);
+            }
+        }
+        bmp.recycle();
+        return o.toByteArray();
     }
 
     private static void write(ByteArrayOutputStream b, String s) {
