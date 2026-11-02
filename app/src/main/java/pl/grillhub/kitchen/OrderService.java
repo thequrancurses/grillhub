@@ -82,6 +82,7 @@ public class OrderService extends Service implements Store.Listener {
             wifi.acquire();
         } catch (Exception e) { /* ignore */ }
 
+        nm.cancel(ID_ALERT);              // an alert left over from a previous run (app update, restart) is stale: sync() below posts a fresh one only if needed
         Store.addListener(this);
         handler.post(tick);
         sync();
@@ -114,7 +115,8 @@ public class OrderService extends Service implements Store.Listener {
         List<JSONObject> ring = Store.ringing();
         if (ring.isEmpty()) {
             stopAlarm();
-            if (!lastAlert.isEmpty()) { nm.cancel(ID_ALERT); lastAlert = ""; }
+            nm.cancel(ID_ALERT);
+            lastAlert = "";
         } else {
             startAlarm();
             StringBuilder nums = new StringBuilder();
@@ -186,8 +188,9 @@ public class OrderService extends Service implements Store.Listener {
                 .setContentText("Tap to open and accept")
                 .setCategory(Notification.CATEGORY_ALARM)
                 .setVisibility(Notification.VISIBILITY_PUBLIC)
-                .setOngoing(true)
+                .setOngoing(false)                // can be swiped away; the alarm itself is driven by the orders, not by this notification
                 .setAutoCancel(false)
+                .setTimeoutAfter(30 * 60 * 1000L) // safety net: never stays forever
                 .setOnlyAlertOnce(true)
                 .setColor(0xFFFF6A1A)
                 .setContentIntent(open)
