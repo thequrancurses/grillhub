@@ -10,8 +10,8 @@ android {
         applicationId 'pl.grillhub.kitchen'
         minSdk 26
         targetSdk 34
-        versionCode 12
-        versionName '6.5'
+        versionCode 13
+        versionName '6.6'
     }
 
     compileOptions {

@@ -1031,6 +1031,11 @@ public class MainActivity extends Activity implements Store.Listener {
             }
         } catch (Exception e) { /* ignore */ }
         Toast.makeText(this, "Selected: " + f.name, Toast.LENGTH_SHORT).show();
+        // chosen: stop searching and hide the list of the other printers ("Change printer" brings the search back)
+        PrinterScan.stop();
+        scanning = false;
+        scanned = false;
+        found.clear();
         render();
     }
 
@@ -1105,7 +1110,7 @@ public class MainActivity extends Activity implements Store.Listener {
         if (has) p.addView(tv(Printer.typeLabel(Printer.get(this, "type")) + " · " + Printer.get(this, "addr"), 13, DIM, false));
 
         LinearLayout btns = hbox();
-        btns.addView(button(scanning ? "⏳  Searching…" : "🔍  Find printers", ORANGE, 16, v -> { if (!scanning) scanClick(); }),
+        btns.addView(button(scanning ? "⏳  Searching…" : has ? "🔍  Change printer" : "🔍  Find printers", ORANGE, 16, v -> { if (!scanning) scanClick(); }),
                 lp(0, dp(52), 1f, 0, 0, 4, 0));
         btns.addView(button("🖨  Test print", SURFACE2, 16, v -> {
             if (!Printer.configured(this)) { Toast.makeText(this, "Choose a printer first", Toast.LENGTH_SHORT).show(); return; }
