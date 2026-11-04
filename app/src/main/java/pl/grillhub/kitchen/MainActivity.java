@@ -384,7 +384,7 @@ public class MainActivity extends Activity implements Store.Listener {
         LinearLayout head = hbox();
         head.setPadding(dp(16), dp(12), dp(16), dp(10));
         ImageView logo = new ImageView(this);
-        logo.setImageResource(R.mipmap.ic_launcher);
+        logo.setImageResource(R.drawable.logo);
         head.addView(logo, lp(dp(46), dp(46), 0f, 0, 0, 12, 0));
         LinearLayout titles = vbox();
         titles.addView(tv("Grill Hub", 22, TEXT, true));
