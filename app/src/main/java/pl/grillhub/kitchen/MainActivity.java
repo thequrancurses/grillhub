@@ -76,6 +76,8 @@ public class MainActivity extends Activity implements Store.Listener {
             BLUE = 0xFF60A5FA, BLUE_DIM = 0x2660A5FA,
             PURPLE = 0xFFC084FC, PURPLE_DIM = 0x26C084FC;
 
+    private int histDay = 0;      // History tab: 0 = today, 1 = yesterday, 2 = the day before
+
     private static final int RC_NOTIF = 1, RC_BATT = 2, RC_FSI = 3, RC_BT = 4;
     private final List<PrinterScan.Found> found = new ArrayList<>();
     private boolean scanning = false, scanned = false;
@@ -321,7 +323,8 @@ public class MainActivity extends Activity implements Store.Listener {
 
         List<JSONObject> act = new ArrayList<>(), sch = new ArrayList<>(), his = new ArrayList<>();
         for (JSONObject o : Store.orders) {
-            if (o.optBoolean("done")) his.add(o);
+            if (o.optBoolean("done") && Store.ts(o) >= dayStart(histDay) && Store.ts(o) < dayStart(histDay - 1)) his.add(o);
+            else if (o.optBoolean("done")) { /* finished, belongs to another day than the one shown */ }
             else if (Store.isSched(o)) sch.add(o);
             else act.add(o);
         }
@@ -434,7 +437,10 @@ public class MainActivity extends Activity implements Store.Listener {
         if (tab.equals("history") && !query.isEmpty()) {
             String q = query.toLowerCase(Locale.getDefault());
             List<JSONObject> f = new ArrayList<>();
-            for (JSONObject o : his) {
+            List<JSONObject> allDone = new ArrayList<>();
+            for (JSONObject o : Store.orders) if (o.optBoolean("done")) allDone.add(o);
+            Collections.reverse(allDone);       // searching looks through every day, not only the selected one
+            for (JSONObject o : allDone) {
                 String hay = (o.optInt("num") + " " + o.optString("name") + " " + o.optString("phone") + " " + o.optString("table")).toLowerCase(Locale.getDefault());
                 if (hay.contains(q)) f.add(o);
             }
@@ -541,6 +547,8 @@ public class MainActivity extends Activity implements Store.Listener {
         chips.addView(dine ? chip("🍽  DINE IN" + (o.optString("table").isEmpty() ? "" : " · TABLE " + o.optString("table")), BLUE_DIM, BLUE)
                 : chip("🛍  PICKUP", PURPLE_DIM, PURPLE));
         chips.addView(Printer.isPaid(o) ? chip("✓ PAID", 0x2622C55E, GREEN) : chip("💵 CASH", AMBER_DIM, AMBER),
+                lp(ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT, 0f, 8, 0, 0, 0));
+        if (o.has("dist_km")) chips.addView(chip("📍 " + Store.km(o.optDouble("dist_km")) + " away", BLUE_DIM, BLUE),
                 lp(ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT, 0f, 8, 0, 0, 0));
         String src = o.optString("src", "");
         if (!src.isEmpty() && !src.equals("direct")) chips.addView(chip(src, SURFACE2, DIM), lp(ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT, 0f, 8, 0, 0, 0));
@@ -859,9 +867,33 @@ public class MainActivity extends Activity implements Store.Listener {
         return p;
     }
 
+    /** start of the day (ms) `back` days ago; back = -1 gives the start of tomorrow = end of today */
+    private long dayStart(int back) {
+        Calendar c = Calendar.getInstance();
+        c.set(Calendar.HOUR_OF_DAY, 0); c.set(Calendar.MINUTE, 0); c.set(Calendar.SECOND, 0); c.set(Calendar.MILLISECOND, 0);
+        c.add(Calendar.DAY_OF_YEAR, -back);
+        return c.getTimeInMillis();
+    }
+
+    private String dayName(int back) {
+        return back == 0 ? "Today" : back == 1 ? "Yesterday" : "2 days ago";
+    }
+
     private View historyHeader() {
         LinearLayout h = vbox();
         h.setPadding(dp(6), dp(6), dp(6), dp(2));
+        LinearLayout days = hbox();
+        for (int d = 0; d < 3; d++) {
+            final int dd = d;
+            boolean on = histDay == d;
+            TextView t = tv(dayName(d), 15, on ? Color.WHITE : DIM, true);
+            t.setGravity(Gravity.CENTER);
+            t.setBackground(ripple(on ? ORANGE : SURFACE2, 20));
+            t.setClickable(true);
+            t.setOnClickListener(v -> { histDay = dd; sv = null; render(); });
+            days.addView(t, lp(0, dp(42), 1f, 3, 0, 3, 0));
+        }
+        h.addView(days, lp(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT, 0f, 0, 2, 0, 8));
         h.addView(statsPanel());
 
         LinearLayout bar = hbox();
@@ -892,15 +924,14 @@ public class MainActivity extends Activity implements Store.Listener {
 
     /** today: orders, revenue, average ticket, best sellers and orders per hour */
     private View statsPanel() {
-        Calendar c0 = Calendar.getInstance();
-        c0.set(Calendar.HOUR_OF_DAY, 0); c0.set(Calendar.MINUTE, 0); c0.set(Calendar.SECOND, 0); c0.set(Calendar.MILLISECOND, 0);
+        long dayLo = dayStart(histDay), dayHi = dayStart(histDay - 1);
         int n = 0;
         double sum = 0;
         int[] perHour = new int[24];
         Map<String, Integer> items = new LinkedHashMap<>();
         Calendar tmp = Calendar.getInstance();
         for (JSONObject o : Store.orders) {
-            if (Store.ts(o) < c0.getTimeInMillis()) continue;
+            if (Store.ts(o) < dayLo || Store.ts(o) >= dayHi) continue;
             n++;
             sum += o.optDouble("total");
             tmp.setTimeInMillis(Store.ts(o));
@@ -915,7 +946,7 @@ public class MainActivity extends Activity implements Store.Listener {
         }
 
         LinearLayout p = panel();
-        p.addView(tv("TODAY", 11, ORANGE, true));
+        p.addView(tv(dayName(histDay).toUpperCase(), 11, ORANGE, true));
         LinearLayout tiles = hbox();
         tiles.addView(tile("ORDERS", String.valueOf(n)), lp(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f, 0, 6, 4, 0));
         tiles.addView(tile("REVENUE", Store.money(sum) + " PLN"), lp(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1.3f, 4, 6, 4, 0));

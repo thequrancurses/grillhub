@@ -161,6 +161,7 @@ final class Printer {
             B.add(new Blk("PICKUP", 'c', true, 2));
             if (!o.optString("name").isEmpty()) B.add(new Blk("Name: " + o.optString("name"), 'l', true, 1));
             if (!o.optString("phone").isEmpty() && on(c, "show_phone")) B.add(new Blk("Phone: " + o.optString("phone"), 'l', false, 1));
+            if (o.has("dist_km")) B.add(new Blk("Distance: " + Store.km(o.optDouble("dist_km")) + " (at order time)", 'l', false, 1));
             if (!o.optString("eta").isEmpty()) B.add(new Blk("Pickup time: " + o.optString("eta"), 'l', true, 1));
         }
         B.add(new Blk(dash, 'l', false, 1));

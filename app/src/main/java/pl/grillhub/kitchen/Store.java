@@ -63,10 +63,13 @@ final class Store {
 
     // ------------------------------------------------------------ setup
 
+    private static Context appCtx;
+
     static void init(Context c) {
         if (inited) return;
         inited = true;
-        prefs = c.getApplicationContext().getSharedPreferences("kitchen", Context.MODE_PRIVATE);
+        appCtx = c.getApplicationContext();
+        prefs = appCtx.getSharedPreferences("kitchen", Context.MODE_PRIVATE);
         load("acked", acked);
         load("printed", printed);
         load("pacc", pendingAcc);
@@ -82,7 +85,19 @@ final class Store {
     static void removeListener(Listener l) { listeners.remove(l); }
 
     private static void notifyChange() {
+        // never leave a "NEW ORDER" notification on screen when nothing waits for acceptance any more
+        // (done here, not only in the service, so it works even if the service was restarted or killed)
+        try {
+            if (appCtx != null && ringing().isEmpty())
+                ((android.app.NotificationManager) appCtx.getSystemService(Context.NOTIFICATION_SERVICE)).cancel(2);
+        } catch (Exception e) { /* ignore */ }
         for (Listener l : new ArrayList<>(listeners)) l.onChange();
+    }
+
+    /** 0.8 -> "800 m", 3.24 -> "3.2 km" */
+    static String km(double k) {
+        if (k < 1) return Math.round(k * 10) * 100 + " m";
+        return String.format(java.util.Locale.US, "%.1f km", k);
     }
 
     private static void persistAcked() { persist("acked", acked); }
