@@ -146,6 +146,8 @@ public class MainActivity extends Activity implements Store.Listener {
         super.onStart();
         Store.addListener(this);
         startListener();
+        // a "NEW ORDER" notification must not outlive the orders it announced
+        if (Store.ringing().isEmpty()) ((NotificationManager) getSystemService(Context.NOTIFICATION_SERVICE)).cancel(2);
         render();
         ui.removeCallbacks(clock);
         ui.postDelayed(clock, 15000);
