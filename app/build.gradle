@@ -10,8 +10,8 @@ android {
         applicationId 'pl.grillhub.kitchen'
         minSdk 26
         targetSdk 34
-        versionCode 14
-        versionName '6.7'
+        versionCode 15
+        versionName '6.8'
     }
 
     // Same signing key for every build (CI runners otherwise generate a new debug key each run,
