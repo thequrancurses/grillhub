@@ -496,6 +496,8 @@ public class MainActivity extends Activity implements Store.Listener {
 
     // ------------------------------------------------------------ order card
 
+    private static final int GREEN_DIM_X = 0x2622C55E;
+
     private View card(final JSONObject o, boolean scheduled) {
         final int id = o.optInt("id");
         final boolean done = o.optBoolean("done");
@@ -546,8 +548,13 @@ public class MainActivity extends Activity implements Store.Listener {
 
         // type chips
         LinearLayout chips = hbox();
-        chips.addView(dine ? chip("🍽  DINE IN" + (o.optString("table").isEmpty() ? "" : " · TABLE " + o.optString("table")), BLUE_DIM, BLUE)
+        final boolean del = "del".equals(o.optString("mode"));
+        chips.addView(del ? chip("🛵  DELIVERY", AMBER_DIM, AMBER) : dine ? chip("🍽  DINE IN" + (o.optString("table").isEmpty() ? "" : " · TABLE " + o.optString("table")), BLUE_DIM, BLUE)
                 : chip("🛍  PICKUP", PURPLE_DIM, PURPLE));
+        if (del && !o.optString("cour_name").isEmpty()) chips.addView(chip("🧑 " + o.optString("cour_name") + " · " + ("picked".equals(o.optString("dlv")) ? "on the way" : "assigned"), GREEN_DIM_X, GREEN),
+                lp(ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT, 0f, 8, 0, 0, 0));
+        else if (del) chips.addView(chip("⏳ finding courier", SURFACE2, DIM),
+                lp(ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT, 0f, 8, 0, 0, 0));
         chips.addView(Printer.isPaid(o) ? chip("✓ PAID", 0x2622C55E, GREEN) : chip("💵 CASH", AMBER_DIM, AMBER),
                 lp(ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT, 0f, 8, 0, 0, 0));
         if (o.has("dist_km")) chips.addView(chip("📍 " + Store.km(o.optDouble("dist_km")) + " away", BLUE_DIM, BLUE),

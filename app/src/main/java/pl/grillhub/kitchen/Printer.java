@@ -157,6 +157,13 @@ final class Printer {
         B.add(new Blk((big ? "ORDER #" : "Order #") + o.optInt("num"), 'c', true, big ? 2 : 1));
         if ("dine".equals(o.optString("mode"))) {
             B.add(new Blk("DINE IN" + (o.optString("table").isEmpty() ? "" : "  TABLE " + o.optString("table")), 'c', true, 2));
+        } else if ("del".equals(o.optString("mode"))) {
+            B.add(new Blk("DELIVERY", 'c', true, 2));
+            if (!o.optString("name").isEmpty()) B.add(new Blk("Name: " + o.optString("name"), 'l', true, 1));
+            if (!o.optString("phone").isEmpty()) B.add(new Blk("Phone: " + o.optString("phone"), 'l', false, 1));
+            if (!o.optString("addr").isEmpty()) B.add(new Blk("Address: " + o.optString("addr") + (o.optString("addr2").isEmpty() ? "" : " (" + o.optString("addr2") + ")"), 'l', true, 1));
+            if (o.optDouble("del_fee") > 0) B.add(new Blk("Delivery fee: " + Store.money(o.optDouble("del_fee")), 'l', false, 1));
+            if (!o.optString("cour_name").isEmpty()) B.add(new Blk("Courier: " + o.optString("cour_name"), 'l', false, 1));
         } else {
             B.add(new Blk("PICKUP", 'c', true, 2));
             if (!o.optString("name").isEmpty()) B.add(new Blk("Name: " + o.optString("name"), 'l', true, 1));
